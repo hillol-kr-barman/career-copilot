@@ -1,37 +1,22 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Outfit", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "DM Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 
 body {
-  background-image: 
-    url('/background/background.jpg'), 
-    url('/background/background.png'), 
-    url('/background/background.jpeg'), 
-    url('/background/background.webp'), 
-    url('/background/bg.jpg'), 
-    url('/background/bg.png'), 
-    url('/background/bg.jpeg'), 
-    url('/background/bg.webp'),
-    radial-gradient(at 0% 0%, rgba(240, 243, 248, 0.7) 0px, transparent 60%), 
-    radial-gradient(at 100% 0%, rgba(248, 250, 252, 0.8) 0px, transparent 60%), 
-    radial-gradient(at 50% 100%, rgba(241, 245, 249, 0.6) 0px, transparent 60%);
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
-  background-color: #F4F6F9;
-  color: #0F172A;
+  background: #0e1012;
+  color: #eef0f3;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
 h1, h2, h3, h4, .font-display {
   font-family: var(--font-display);
+  letter-spacing: -0.02em;
 }
 
 .font-mono {
@@ -47,11 +32,11 @@ h1, h2, h3, h4, .font-display {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 99px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(15, 23, 42, 0.16);
+  background: rgba(255, 255, 255, 0.18);
 }
 
 /* Scroll support container alignment */
