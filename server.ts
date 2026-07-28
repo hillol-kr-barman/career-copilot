@@ -1,8 +1,11 @@
+import dotenv from "dotenv";
 import express from "express";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
+
+dotenv.config();
 
 // Initialize Gemini client dynamically or of custom credentials
 function getGeminiClient(clientApiKey?: string): GoogleGenAI {
