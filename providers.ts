@@ -79,7 +79,11 @@ function familyVersion(id: string, pattern: RegExp): number {
   const major = Number(m[1]);
   if (!Number.isFinite(major)) return 0;
   const minor = m[2] !== undefined ? Number(m[2]) : 0;
-  return major + (Number.isFinite(minor) ? minor / 10 : 0);
+  // Defensive clamp: a "minor" above 99 is not a version, it's a date or a
+  // parameter count that leaked through the pattern. Fall back to the major
+  // rather than letting it dwarf every other score.
+  if (!Number.isFinite(minor) || minor > 99) return major;
+  return major + minor / 10;
 }
 
 /**
@@ -176,8 +180,18 @@ function scoreAnthropic(id: string): number {
   // Sonnet is the quality/speed sweet spot for this workload; Haiku is the
   // cheap fallback; Opus is reserved for when it's all the key can reach.
   const tier = /sonnet/i.test(id) ? 30 : /haiku/i.test(id) ? 20 : 10;
-  const dated = /-\d{8}$/.test(id) ? -3 : 0;
-  return familyVersion(id, /claude-(?:[a-z]+-)*?(\d+)(?:[-.](\d+))?/i) * 10 + tier + dated + stabilityBonus(id);
+  const isDated = /-\d{8}$/.test(id);
+
+  // Strip the release date before reading the version. Anthropic ids are shaped
+  // `claude-<tier>-<major>-<date>`, and the minor-version group accepts `-` as a
+  // separator, so the 8-digit date was captured as the minor version:
+  // `claude-sonnet-4-20250514` read as version 2025055.4 and outranked every
+  // genuinely newer model. The `(?![\d])` guard is a second line of defence for
+  // any dated shape this strip doesn't catch.
+  const undated = isDated ? id.replace(/-\d{8}$/, "") : id;
+  const version = familyVersion(undated, /claude-(?:[a-z]+-)*?(\d+)(?:[-.](\d{1,2}))?(?![\d])/i);
+
+  return version * 10 + tier + (isDated ? -3 : 0) + stabilityBonus(id);
 }
 
 const SCORERS: Record<ProviderId, (id: string) => number> = {
