@@ -33,6 +33,16 @@ const TAB_NAMES = [
 
 const HEADLINE_TABS = TAB_NAMES.slice(0, 3);
 
+/**
+ * Normalise a marker before comparing it.
+ *
+ * Models routinely substitute a typographic apostrophe, and "What's Working" is
+ * the one tab name containing an apostrophe — when that happened the marker and
+ * its whole body were appended to the previous tab and the real tab read as
+ * missing. Case is normalised for the same reason.
+ */
+const normaliseMarker = (s: string) => s.replace(/[‘’ʼ]/g, "'").toLowerCase();
+
 /** Split the model's plain-text response on its [[Section]] markers. */
 const parseSections = (rawText: string): ResumeReportSection[] => {
   const lines = rawText.split("\n");
@@ -40,8 +50,8 @@ const parseSections = (rawText: string): ResumeReportSection[] => {
   let currentMarker: string | null = null;
 
   lines.forEach((line) => {
-    const stripped = line.trim();
-    const matched = TAB_NAMES.find((tab) => stripped === `[[${tab}]]`);
+    const stripped = normaliseMarker(line.trim());
+    const matched = TAB_NAMES.find((tab) => stripped === normaliseMarker(`[[${tab}]]`));
     if (matched) {
       currentMarker = matched;
       sectionsMap[currentMarker] = [];
@@ -75,9 +85,25 @@ const parseSections = (rawText: string): ResumeReportSection[] => {
 const extractCallbackPercent = (sections: ResumeReportSection[]): number | null => {
   const section = sections.find((s) => s.tabName === "Callback Score");
   if (!section) return null;
-  const match = section.content.match(/(\d{1,3})\s*%/);
-  if (!match) return null;
-  const value = parseInt(match[1], 10);
+
+  // Anchor on the label. An unanchored /(\d{1,3})\s*%/ takes the first
+  // percentage anywhere in the section, so "Only 15% of the required keywords
+  // appear. Callback Likelihood: 72%" read as 15 — and this is the single most
+  // prominent number in the product.
+  const labelled = section.content.match(/Callback\s+Likelihood\s*:?\s*(\d{1,3})\s*%/i);
+  if (labelled) return clampPercent(labelled[1]);
+
+  // Fallback for when the model drops the label: the first percentage that
+  // isn't the upper bound of a range, so "on a 0-100% scale: 72%" reads 72.
+  for (const m of section.content.matchAll(/(?:(\d{1,3})\s*[-–—]\s*)?(\d{1,3})\s*%/g)) {
+    if (m[1] !== undefined) continue;
+    return clampPercent(m[2]);
+  }
+  return null;
+};
+
+const clampPercent = (raw: string): number | null => {
+  const value = parseInt(raw, 10);
   return value >= 0 && value <= 100 ? value : null;
 };
 
