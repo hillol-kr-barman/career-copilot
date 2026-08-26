@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
 import express from "express";
+import rateLimit from "express-rate-limit";
+import helmet from "helmet";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
@@ -10,6 +12,15 @@ import { generate, generateJSON, resolveProvider } from "./providers";
 dotenv.config();
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5MB — matches what the uploader advertises
+
+/**
+ * Ceiling on text handed to the local detector. `detectAiStatistically` is
+ * fully synchronous — full-text replaces, a Set over every word, and 50-odd
+ * regex scans over the whole string — so its cost is charged directly to the
+ * event loop. An 18MB body blocked it for 566ms; 50k characters is far more
+ * than any real resume and keeps that in the low single-digit milliseconds.
+ */
+const MAX_DETECT_CHARS = 50_000;
 
 // This platform is bring-your-own-key and provider-agnostic: the engine and
 // model are derived from the visitor's own key at request time (see
@@ -336,7 +347,75 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: "20mb" }));
+  // No CSP source in this app is remote, and the API key lives in localStorage
+  // — any XSS hands it over, so the CSP is worth having. `contentSecurityPolicy`
+  // is configured rather than defaulted because Vite's dev client needs inline
+  // styles and a websocket back to the dev server.
+  app.disable("x-powered-by");
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", "data:"],
+          connectSrc: ["'self'", ...(process.env.NODE_ENV !== "production" ? ["ws:"] : [])],
+          objectSrc: ["'none'"],
+          frameAncestors: ["'self'"],
+        },
+      },
+      // The app serves its own assets only; COEP breaks the Vite dev client.
+      crossOriginEmbedderPolicy: false,
+    })
+  );
+
+  // 8MB accommodates a 5MB upload after base64 inflation and nothing more.
+  app.use(express.json({ limit: "8mb" }));
+
+  // Body-parser rejections (oversized or malformed JSON) never reach a route
+  // handler, so without this they fall to Express's default handler and return
+  // an HTML error page. Every client here calls `res.json()` on the response,
+  // which would surface "Unexpected token '<'" instead of the real reason.
+  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!err) return next();
+    if (err.type === "entity.too.large") {
+      return res.status(413).json({
+        error: `That upload is too large — the limit is ${MAX_UPLOAD_BYTES / 1048576}MB.`,
+      });
+    }
+    if (err.type === "entity.parse.failed") {
+      return res.status(400).json({ error: "Malformed request body." });
+    }
+    return next(err);
+  });
+
+  /**
+   * Rate limiting.
+   *
+   * Two routes here are unauthenticated by design: `/api/ai-detect` never calls
+   * a model, and `/api/ai/identify` answers a precise question about an
+   * arbitrary secret. Without a limit, `identify` is a key-validation oracle
+   * anyone can triage scraped keys through, and the unbounded resolution cache
+   * behind it is anonymously fillable.
+   */
+  const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 60,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many requests. Wait a minute and try again." },
+  });
+
+  const identifyLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 5,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many key checks. Wait a minute and try again." },
+  });
+
+  app.use("/api/", apiLimiter);
 
   // Simple directory structure checks
   const publicDir = path.join(process.cwd(), "public");
@@ -363,11 +442,18 @@ async function startServer() {
 
   // Identify which engine and model a key resolves to, so the UI can confirm
   // the key works and show what it connected to — without a model picker.
-  app.post("/api/ai/identify", async (req, res) => {
+  app.post("/api/ai/identify", identifyLimiter, async (req, res) => {
     try {
       const { apiKey } = req.body;
       const info = await resolveProvider(apiKey);
-      res.json(info);
+      // Only what the UI renders. The full ProviderInfo includes the ranked
+      // alternates, which tells an untrusted caller exactly which models an
+      // arbitrary key can reach.
+      res.json({
+        provider: info.provider,
+        providerLabel: info.providerLabel,
+        model: info.model,
+      });
     } catch (error: any) {
       // Expected for a mistyped key — log at info level, not as an error.
       console.log("Key identification failed:", error?.message);
@@ -546,13 +632,17 @@ ${activePrompt}
   // FAST_DETECT_GPT_URL=http://localhost:8765/detect in .env and it will be used instead.
   app.post("/api/ai-detect", async (req, res) => {
     try {
-      const { text } = req.body;
-      if (!text || !text.trim()) {
+      const { text: rawInput } = req.body;
+      if (typeof rawInput !== "string" || !rawInput.trim()) {
         return res.status(400).json({ error: "Text is required." });
       }
-      if (text.trim().length < 50) {
+      if (rawInput.trim().length < 50) {
         return res.status(400).json({ error: "Text too short — please provide at least 50 characters for reliable detection." });
       }
+
+      // Bounded before any scanning happens. This route takes no API key, so
+      // nothing else limits how much work a caller can ask for per request.
+      const text = rawInput.slice(0, MAX_DETECT_CHARS);
 
       // Option 1: local fast-detect-gpt server (user-configured)
       const localFastDetectUrl = process.env.FAST_DETECT_GPT_URL;
