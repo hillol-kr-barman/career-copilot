@@ -700,8 +700,18 @@ ${activePrompt}
           body: JSON.stringify({ text }),
           signal: AbortSignal.timeout(30000),
         });
-        const localData = await localRes.json() as { probability?: number; criterion?: number; error?: string };
-        if (!localRes.ok) throw new Error(localData.error || "Local fast-detect-gpt error.");
+        // Parse only after checking `ok`: an error page from this host is HTML,
+        // and `.json()` on it surfaces "Unexpected token '<'" to the user.
+        if (!localRes.ok) {
+          throw new Error(`Local fast-detect-gpt returned HTTP ${localRes.status}.`);
+        }
+        let localData: { probability?: number; criterion?: number; error?: string };
+        try {
+          localData = await localRes.json() as typeof localData;
+        } catch {
+          throw new Error("Local fast-detect-gpt returned a malformed response.");
+        }
+        if (localData.error) throw new Error(localData.error);
         return res.json({
           aiProbability: Math.round((localData.probability ?? 0) * 100),
           criterion: localData.criterion ?? null,
