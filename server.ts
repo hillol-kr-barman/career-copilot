@@ -22,6 +22,10 @@ const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5MB — matches what the uploader a
  */
 const MAX_DETECT_CHARS = 50_000;
 
+// Base64 inflates by 4/3. Rejecting on the encoded length first means an
+// oversized payload never gets decoded into a second full-size Buffer.
+const MAX_BASE64_CHARS = Math.ceil(MAX_UPLOAD_BYTES * 1.37);
+
 // This platform is bring-your-own-key and provider-agnostic: the engine and
 // model are derived from the visitor's own key at request time (see
 // providers.ts). There is no server-side key and no hardcoded model, so a
@@ -306,7 +310,19 @@ function detectAiStatistically(text: string): number {
 // invalidate every score the rest of the app produces.
 // ---------------------------------------------------------------------------
 async function extractResumeText(fileName: string, buffer: Buffer): Promise<string> {
-  const suffix = fileName.split(".").pop()?.toLowerCase() ?? "";
+  // `.pop()` on a name with no dot returns the whole name, and a trailing space
+  // ("resume.PDF ") produces the suffix "pdf " — both reported an unsupported
+  // file type for a file that was fine.
+  const dot = fileName.lastIndexOf(".");
+  const suffix = dot === -1 ? "" : fileName.slice(dot + 1).trim().toLowerCase();
+
+  if (!suffix) {
+    const err: any = new Error(
+      "That file has no extension, so its format can't be determined. Rename it with a .pdf, .docx, .txt, .md or .csv extension."
+    );
+    err.statusCode = 415;
+    throw err;
+  }
 
   switch (suffix) {
     case "txt":
@@ -468,6 +484,24 @@ async function startServer() {
 
       if (!fileName || !dataBase64) {
         return res.status(400).json({ error: "fileName and dataBase64 are required." });
+      }
+
+      if (typeof dataBase64 !== "string") {
+        return res.status(400).json({ error: "dataBase64 must be a string." });
+      }
+
+      // Check the encoded length first: decoding an oversized payload allocates
+      // a second full-size Buffer before the limit below could reject it.
+      if (dataBase64.length > MAX_BASE64_CHARS) {
+        return res.status(413).json({
+          error: `That file is larger than the ${MAX_UPLOAD_BYTES / 1048576}MB limit.`,
+        });
+      }
+
+      // Buffer.from silently discards non-base64 characters, so garbage decodes
+      // to a short Buffer and reaches the PDF/DOCX parsers as nonsense.
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(dataBase64.replace(/\s/g, ""))) {
+        return res.status(400).json({ error: "That upload was not valid base64. Try again." });
       }
 
       const buffer = Buffer.from(dataBase64, "base64");
