@@ -123,9 +123,14 @@ const DATED_PENALTY = -1;
 const LATEST_ALIAS_VERSION = 90;
 
 async function listGoogleModels(apiKey: string): Promise<string[]> {
+  // The key goes in a header, not the query string: query strings are recorded
+  // by proxies, CDNs, and OS-level network logs in a way headers are not.
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=200`,
-    { signal: AbortSignal.timeout(20000) }
+    "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+    {
+      headers: { "x-goog-api-key": apiKey },
+      signal: AbortSignal.timeout(20000),
+    }
   );
 
   if (res.status === 400 || res.status === 401 || res.status === 403) {
@@ -386,7 +391,10 @@ function stripForGoogle(schema: any): any {
 async function generateGoogle(opts: GenerateOptions, model: string): Promise<string> {
   const ai = new GoogleGenAI({
     apiKey: opts.apiKey,
-    httpOptions: { headers: { "User-Agent": "aistudio-build" } },
+    // Without a timeout a stalled connection holds the handler, the client's
+    // fetch, and the user's spinner open indefinitely. Matches the 120s the
+    // OpenAI and Anthropic clients already use.
+    httpOptions: { headers: { "User-Agent": "aistudio-build" }, timeout: 120000 },
   });
 
   const response = await ai.models.generateContent({
