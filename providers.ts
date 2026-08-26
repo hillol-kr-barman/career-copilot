@@ -259,10 +259,38 @@ interface CacheEntry {
 }
 
 const RESOLUTION_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Hard ceiling on cache size. `/api/ai/identify` is unauthenticated, so the set
+ * of distinct keys reaching this map is attacker-controlled: without a bound it
+ * grows forever (200k distinct keys measured at ~68 MB of expired entries).
+ * Map preserves insertion order, so evicting the first key is FIFO.
+ */
+const RESOLUTION_CACHE_MAX = 5000;
 const resolutionCache = new Map<string, CacheEntry>();
 
 function cacheKey(apiKey: string): string {
   return crypto.createHash("sha256").update(apiKey).digest("hex");
+}
+
+function cacheGet(hash: string): ProviderInfo | null {
+  const entry = resolutionCache.get(hash);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    // Expired entries were never deleted on read, so nothing ever shrank the
+    // map — a miss on a stale entry left it in place forever.
+    resolutionCache.delete(hash);
+    return null;
+  }
+  return entry.info;
+}
+
+function cacheSet(hash: string, info: ProviderInfo): void {
+  if (resolutionCache.size >= RESOLUTION_CACHE_MAX && !resolutionCache.has(hash)) {
+    const oldest = resolutionCache.keys().next();
+    if (!oldest.done) resolutionCache.delete(oldest.value);
+  }
+  resolutionCache.set(hash, { info, expiresAt: Date.now() + RESOLUTION_TTL_MS });
 }
 
 /**
@@ -276,8 +304,9 @@ export async function resolveProvider(apiKey?: string): Promise<ProviderInfo> {
     throw authError("No API key provided. Add your own key to power this tool.");
   }
 
-  const cached = resolutionCache.get(cacheKey(key));
-  if (cached && cached.expiresAt > Date.now()) return cached.info;
+  const hash = cacheKey(key);
+  const cached = cacheGet(hash);
+  if (cached) return cached;
 
   const detected = detectProvider(key);
 
@@ -330,7 +359,7 @@ export async function resolveProvider(apiKey?: string): Promise<ProviderInfo> {
       alternates: ranked.slice(1, 4).map((m) => m.id),
     };
 
-    resolutionCache.set(cacheKey(key), { info, expiresAt: Date.now() + RESOLUTION_TTL_MS });
+    cacheSet(hash, info);
     return info;
   }
 
