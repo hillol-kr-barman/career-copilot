@@ -94,6 +94,34 @@ function stabilityBonus(id: string): number {
   return /preview|-exp|experimental|-rc\d|beta|alpha/i.test(id) ? -8 : 0;
 }
 
+/**
+ * Tier weights sit *below* one version step (10) on purpose.
+ *
+ * A tier gap wider than a version step inverts the ranking: with flash=30 and
+ * pro=15, `gemini-1.5-flash` outranked `gemini-2.5-pro`, so any Flash beat any
+ * Pro up to two generations newer — including when that Pro was the only
+ * capable model on the key. Version is the dominant signal; tier only breaks
+ * ties within a generation.
+ */
+const TIER_FAST = 6;
+const TIER_STANDARD = 3;
+const TIER_WEAK = 1;
+
+/**
+ * A dated snapshot ranks below its floating alias, but this is only a tiebreak
+ * — it must stay below the tier gap so it can't reorder tiers.
+ */
+const DATED_PENALTY = -1;
+
+/**
+ * Rolling aliases (`gemini-flash-latest`) carry no version digits, so they
+ * scored 0 and ranked last — the exact opposite of what this module is for.
+ * They always resolve to the current stable release of their variant, which is
+ * the most retirement-proof choice a key can make, so they get a synthetic
+ * version above any concrete one.
+ */
+const LATEST_ALIAS_VERSION = 90;
+
 async function listGoogleModels(apiKey: string): Promise<string[]> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=200`,
@@ -134,8 +162,14 @@ function scoreGoogle(id: string): number {
   if (!isGeneralPurpose) return -Infinity;
 
   // Flash is the fast tier; lite is faster but noticeably weaker for this work.
-  const tier = /flash-lite/i.test(id) ? 5 : /flash/i.test(id) ? 30 : 15;
-  return familyVersion(id, /gemini-(\d+)(?:\.(\d+))?/i) * 10 + tier + stabilityBonus(id);
+  const tier = /flash-lite/i.test(id) ? TIER_WEAK : /flash/i.test(id) ? TIER_FAST : TIER_STANDARD;
+
+  // `gemini-flash-latest` / `gemini-pro-latest` have no version digits.
+  const version = /-latest$/i.test(id)
+    ? LATEST_ALIAS_VERSION
+    : familyVersion(id, /gemini-(\d+)(?:\.(\d+))?/i);
+
+  return version * 10 + tier + stabilityBonus(id);
 }
 
 async function listOpenAIModels(apiKey: string): Promise<string[]> {
@@ -157,9 +191,15 @@ function scoreOpenAI(id: string): number {
   }
   if (!/^(gpt|o\d|chatgpt)/i.test(id)) return -Infinity;
   // Dated snapshots (gpt-4o-2024-08-06) rank below their floating alias.
-  const dated = /-\d{4}-\d{2}-\d{2}$/.test(id) ? -3 : 0;
-  const tier = /mini|nano/i.test(id) ? 30 : 15;
-  return familyVersion(id, /(?:gpt|o)-?(\d+)(?:\.(\d+))?/i) * 10 + tier + dated + stabilityBonus(id);
+  const dated = /-\d{4}-\d{2}-\d{2}$/.test(id) ? DATED_PENALTY : 0;
+  // Nano is materially weaker than mini, so they no longer share a tier.
+  const tier = /nano/i.test(id) ? TIER_WEAK : /mini/i.test(id) ? TIER_FAST : TIER_STANDARD;
+
+  const version = /-latest$/i.test(id)
+    ? LATEST_ALIAS_VERSION
+    : familyVersion(id, /(?:gpt|o)-?(\d+)(?:\.(\d+))?/i);
+
+  return version * 10 + tier + dated + stabilityBonus(id);
 }
 
 async function listAnthropicModels(apiKey: string): Promise<string[]> {
@@ -179,7 +219,7 @@ function scoreAnthropic(id: string): number {
   if (!/^claude/i.test(id)) return -Infinity;
   // Sonnet is the quality/speed sweet spot for this workload; Haiku is the
   // cheap fallback; Opus is reserved for when it's all the key can reach.
-  const tier = /sonnet/i.test(id) ? 30 : /haiku/i.test(id) ? 20 : 10;
+  const tier = /sonnet/i.test(id) ? TIER_FAST : /haiku/i.test(id) ? TIER_STANDARD : TIER_WEAK;
   const isDated = /-\d{8}$/.test(id);
 
   // Strip the release date before reading the version. Anthropic ids are shaped
@@ -191,7 +231,7 @@ function scoreAnthropic(id: string): number {
   const undated = isDated ? id.replace(/-\d{8}$/, "") : id;
   const version = familyVersion(undated, /claude-(?:[a-z]+-)*?(\d+)(?:[-.](\d{1,2}))?(?![\d])/i);
 
-  return version * 10 + tier + (isDated ? -3 : 0) + stabilityBonus(id);
+  return version * 10 + tier + (isDated ? DATED_PENALTY : 0) + stabilityBonus(id);
 }
 
 const SCORERS: Record<ProviderId, (id: string) => number> = {
@@ -262,7 +302,14 @@ export async function resolveProvider(apiKey?: string): Promise<ProviderInfo> {
     const ranked = ids
       .map((id) => ({ id, score: score(id) }))
       .filter((m) => m.score > -Infinity)
-      .sort((a, b) => b.score - a.score);
+      // Ties must not be broken by the provider's list order, or the pick
+      // silently flips between equal-scoring models (gpt-5-mini / gpt-5-nano)
+      // depending on how the API happened to order its response. Shorter id
+      // first: the base model rather than a longer specialised variant.
+      .sort(
+        (a, b) =>
+          b.score - a.score || a.id.length - b.id.length || a.id.localeCompare(b.id)
+      );
 
     if (ranked.length === 0) {
       lastError = authError(
