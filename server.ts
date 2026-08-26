@@ -1,33 +1,48 @@
 import dotenv from "dotenv";
 import express from "express";
 import path from "path";
-import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
+import mammoth from "mammoth";
+import { extractText, getDocumentProxy } from "unpdf";
+import { generate, generateJSON, resolveProvider } from "./providers";
 
 dotenv.config();
 
-// Initialize Gemini client dynamically or of custom credentials
-function getGeminiClient(clientApiKey?: string): GoogleGenAI {
-  const apiKey = (clientApiKey && clientApiKey.trim()) || process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.warn("Warning: GEMINI_API_KEY is not defined. AI features may fail unless provided by the user.");
-  }
-  return new GoogleGenAI({
-    apiKey: apiKey || "dummy-key-to-prevent-immediate-crash",
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      }
-    }
-  });
-}
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5MB — matches what the uploader advertises
+
+// This platform is bring-your-own-key and provider-agnostic: the engine and
+// model are derived from the visitor's own key at request time (see
+// providers.ts). There is no server-side key and no hardcoded model, so a
+// model being retired can't break the app and nothing here bills the operator.
 
 // Default prompts definitions
+//
+// Section order matters: the first three sections are the headline answers the
+// product promises (callback likelihood, what works, what to fix). The eight
+// that follow are the full-depth report.
 const DEFAULT_RESUME_PROMPT = `
 You are an expert ATS (Applicant Tracking System) reviewer and recruiters' coach.
-Check if the resume satisfies the Job Description. Highlight the match and mismatch, assign an ATS score from 0-100%, and generate a detailed report.
-Please format the output of the analysis into the following exact sections with dividers:
+Check if the resume satisfies the Job Description. Highlight the match and mismatch, and generate a detailed report.
+Please format the output into the following exact sections, each introduced by its marker on its own line, in this exact order:
+
+[[Callback Score]]
+State a single callback likelihood as a percentage (0% to 100%) on the first line, in the exact form "Callback Likelihood: NN%".
+This is the probability that a recruiter screening for THIS job description would invite THIS candidate to a first conversation.
+Then explain the scoring in terms of keyword coverage, seniority fit, and domain relevance. Be honest — do not inflate the number to be encouraging.
+
+[[What's Working]]
+List the specific things this resume does well, as concrete bullet points.
+Quote the actual phrasing from the resume that is working, and say why it lands for this job description.
+Only list genuine strengths. If the resume is weak, say so plainly rather than padding this section.
+
+[[What to Fix]]
+List the changes that would most raise the callback score, in priority order.
+For EVERY item you must anchor the fix to a location, using the exact form:
+"Where: <section name or the quoted line from the resume>"
+then on the next line:
+"Fix: <the specific change to make>"
+Be concrete. "Add more metrics" is useless; "Where: Senior Consultant bullet 2 / Fix: replace 'improved efficiency' with the actual % and timeframe" is useful.
 
 [[JD Review]]
 Provide a critical review of the job description.
@@ -40,13 +55,10 @@ Mandatory Minimum Requirements:
 [[MMR_END]]
 
 [[Resume Review]]
-Give an honest review of the candidate's resume, highlighting key skills, gaps, and weaknesses.
-
-[[ATS Score]]
-Assign an expert estimated ATS Score (0% to 100%) and explain the scoring criteria based on keywords, seniority, and domain relevance.
+Give an honest, holistic read of the candidate's resume covering structure, tone, and positioning.
 
 [[JD Scorecard]]
-Review the core pillars of the JD (e.g. Technical Skills, Leadership, Communication) and score them.
+Review the core pillars of the JD (e.g. Technical Skills, Leadership, Communication) and score them individually.
 
 [[Resume Rewrite]]
 Suggest specific text blocks on how to rewrite or rephrase the professional summaries, work experience, to elevate the tone.
@@ -71,13 +83,66 @@ Briefly conclude on general readiness and provide immediate guidance.
 `;
 
 const DEFAULT_INTERVIEW_PROMPT = `
-You are an advanced interview coach. Based on the provided Job Description and Candidate Resume, generate 5-8 tailored and highly challenging interview questions.
-Ensure they target:
-1. Candidate's core skills mismatch or experience gaps
-2. Demanding technical scenarios mentioned in the Job Description
-3. STAR format behavioral questions to extract concrete accomplishments.
-Provide specific guidance or criteria of a great response for each question.
+You are an advanced interview coach preparing THIS candidate for THIS specific role.
+
+First, read the resume and identify the candidate's educational qualifications yourself —
+degrees, institutions, certifications, and graduation dates. Do not ask for them; they are
+in the resume. If the resume genuinely contains no education section, note that as a gap
+rather than inventing one.
+
+Then generate 8 tailored, challenging interview questions, each paired with a strong model
+answer written in the candidate's own voice ("I ...").
+
+Ensure the set covers:
+1. The candidate's core skill mismatches or experience gaps versus the job description
+2. Demanding technical scenarios named in the job description
+3. STAR-format behavioural questions that surface concrete accomplishments
+4. At least one question that draws on the educational background you identified in the resume
+
+Every model answer must:
+- Be grounded in the candidate's ACTUAL resume content — never invent employers, dates, or achievements that are not present
+- Follow STAR structure (Situation, Task, Action, Result) for behavioural questions
+- Be 120-200 words, speakable aloud in about 90 seconds
+- Where the resume genuinely lacks the experience being asked about, coach the candidate to bridge honestly from adjacent experience rather than fabricating
 `;
+
+/**
+ * Structured-output contract for the interview Q&A set.
+ *
+ * `additionalProperties: false` and exhaustive `required` lists are mandatory
+ * for OpenAI strict mode and Anthropic; providers.ts strips them for Google,
+ * whose schema dialect rejects unknown keys.
+ */
+const QA_SCHEMA = {
+  type: "object",
+  properties: {
+    pairs: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The interview question." },
+          answer: {
+            type: "string",
+            description: "A model answer in the candidate's voice, grounded in their resume.",
+          },
+          category: {
+            type: "string",
+            description: "One of: Behavioural, Technical, Gap Probe, Education, Motivation",
+          },
+          rationale: {
+            type: "string",
+            description: "One sentence on why an interviewer for this role would ask this.",
+          },
+        },
+        required: ["question", "answer", "category", "rationale"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["pairs"],
+  additionalProperties: false,
+} as const satisfies Record<string, unknown>;
 
 const DEFAULT_EVALUATION_PROMPT = `
 You are an expert Talent Acquisition Assessor. Match the given question-by-question scoring and summary metrics against the job description and interview transcripts.
@@ -223,6 +288,50 @@ function detectAiStatistically(text: string): number {
   return Math.max(0, Math.min(1, composite));
 }
 
+// ---------------------------------------------------------------------------
+// Resume text extraction
+// Real extraction only. If a format cannot be read, this reports failure rather
+// than substituting placeholder text — a fabricated resume would silently
+// invalidate every score the rest of the app produces.
+// ---------------------------------------------------------------------------
+async function extractResumeText(fileName: string, buffer: Buffer): Promise<string> {
+  const suffix = fileName.split(".").pop()?.toLowerCase() ?? "";
+
+  switch (suffix) {
+    case "txt":
+    case "csv":
+    case "md":
+      return buffer.toString("utf8");
+
+    case "pdf": {
+      const pdf = await getDocumentProxy(new Uint8Array(buffer));
+      const { text } = await extractText(pdf, { mergePages: true });
+      return Array.isArray(text) ? text.join("\n") : text;
+    }
+
+    case "docx": {
+      const { value } = await mammoth.extractRawText({ buffer });
+      return value;
+    }
+
+    case "doc": {
+      const err: any = new Error(
+        "Legacy .doc files can't be read. Please re-save as .docx or .pdf and upload again."
+      );
+      err.statusCode = 415;
+      throw err;
+    }
+
+    default: {
+      const err: any = new Error(
+        `Unsupported file type ".${suffix}". Upload a PDF, DOCX, TXT, MD or CSV file.`
+      );
+      err.statusCode = 415;
+      throw err;
+    }
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -235,26 +344,79 @@ async function startServer() {
     fs.mkdirSync(publicDir, { recursive: true });
   }
 
-  // API Config / Status
-  app.get("/api/config", (req, res) => {
-    res.json({
-      hasApiKey: !!process.env.GEMINI_API_KEY,
-      defaultModel: "gemini-3.5-flash",
-    });
+  // Shared error responder so every route reports auth/format failures with the
+  // right status instead of collapsing everything into a 500.
+  const fail = (res: express.Response, error: any, fallbackMsg: string) => {
+    const status = error?.statusCode ?? 500;
+    res.status(status).json({ error: error?.message || fallbackMsg });
+  };
+
+  // API Config / Status. Deliberately says nothing about keys or models: this
+  // deployment holds no key, and the model is resolved per-key at request time.
+  app.get("/api/config", (_req, res) => {
+    res.json({ bringYourOwnKey: true });
+  });
+
+  // Identify which engine and model a key resolves to, so the UI can confirm
+  // the key works and show what it connected to — without a model picker.
+  app.post("/api/ai/identify", async (req, res) => {
+    try {
+      const { apiKey } = req.body;
+      const info = await resolveProvider(apiKey);
+      res.json(info);
+    } catch (error: any) {
+      // Expected for a mistyped key — log at info level, not as an error.
+      console.log("Key identification failed:", error?.message);
+      fail(res, error, "Could not verify that API key.");
+    }
+  });
+
+  // 0. Resume Extraction Endpoint
+  app.post("/api/resume/extract", async (req, res) => {
+    try {
+      const { fileName, dataBase64 } = req.body;
+
+      if (!fileName || !dataBase64) {
+        return res.status(400).json({ error: "fileName and dataBase64 are required." });
+      }
+
+      const buffer = Buffer.from(dataBase64, "base64");
+      if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+        return res.status(413).json({
+          error: `File is ${(buffer.byteLength / 1048576).toFixed(1)}MB — the limit is 5MB.`,
+        });
+      }
+
+      const rawText = await extractResumeText(fileName, buffer);
+      const text = rawText.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+      // A PDF of scanned images extracts to nothing. Say so, rather than
+      // handing an empty resume to the model.
+      if (text.length < 50) {
+        return res.status(422).json({
+          error:
+            "Almost no text could be read from that file. If it's a scanned image or screenshot, paste your resume text directly instead.",
+        });
+      }
+
+      res.json({ text, fileName, chars: text.length });
+    } catch (error: any) {
+      console.error("Error in /api/resume/extract:", error);
+      fail(res, error, "Could not read that file. Try a different format or paste the text directly.");
+    }
   });
 
   // 1. Analyze Resume Endpoint
   app.post("/api/resume/analyze", async (req, res) => {
     try {
-      const { jobDescription, resumeText, customPrompt, promptNotes, apiKey, model } = req.body;
-      
+      const { jobDescription, resumeText, customPrompt, promptNotes, apiKey } = req.body;
+
       if (!jobDescription || !resumeText) {
         return res.status(400).json({ error: "Job description and resume text are required." });
       }
 
       const activePrompt = (customPrompt && customPrompt.trim()) || DEFAULT_RESUME_PROMPT;
       const combinedNotesMsg = promptNotes ? `\n\nUser Context/Notes:\n${promptNotes}` : "";
-      const activeModel = model || "gemini-3.5-flash";
 
       const promptPayload = `
 Job Description:
@@ -268,39 +430,42 @@ Instructions & Requested format is as follows:
 ${activePrompt}
 `;
 
-      const ai = getGeminiClient(apiKey);
-      const response = await ai.models.generateContent({
-        model: activeModel,
-        contents: promptPayload,
-        config: {
-          systemInstruction: "You are an elite talent coach, helping candidates match resumes with Job Descriptions, specializing in ATS optimizations.",
-          temperature: 0.2,
-        },
+      const { text, provider, model } = await generate({
+        apiKey,
+        system:
+          "You are an elite talent coach, helping candidates match resumes with Job Descriptions, specializing in ATS optimizations.",
+        prompt: promptPayload,
       });
 
       res.json({
-        report: response.text || "No report content generated by the model.",
-        modelUsed: activeModel,
+        report: text || "No report content generated by the model.",
+        modelUsed: model,
+        provider,
       });
     } catch (error: any) {
       console.error("Error in /api/resume/analyze:", error);
-      res.status(500).json({ error: error?.message || "An unexpected error occurred during AI analysis." });
+      fail(res, error, "An unexpected error occurred during AI analysis.");
     }
   });
 
-  // 2. Generate Interview Questions Endpoint
+  // 2. Generate Interview Questions + Model Answers Endpoint
+  //
+  // Returns structured JSON so the client can render Q&A pairs and export them
+  // to PDF/DOCX without re-parsing prose.
   app.post("/api/interview/questions", async (req, res) => {
     try {
-      const { jobDescription, resumeText, customPrompt, apiKey, model } = req.body;
+      const { jobDescription, resumeText, appliedPosition, customPrompt, apiKey } = req.body;
 
       if (!jobDescription || !resumeText) {
         return res.status(400).json({ error: "Job description and resume text are required." });
       }
 
       const activePrompt = (customPrompt && customPrompt.trim()) || DEFAULT_INTERVIEW_PROMPT;
-      const activeModel = model || "gemini-3.5-flash";
 
       const promptPayload = `
+Applied Position:
+${appliedPosition || "Not specified — infer the target role from the job description."}
+
 Job Description:
 ${jobDescription}
 
@@ -311,33 +476,31 @@ Instructions of evaluation guidelines to follow:
 ${activePrompt}
 `;
 
-      const ai = getGeminiClient(apiKey);
-      const response = await ai.models.generateContent({
-        model: activeModel,
-        contents: promptPayload,
-        config: {
-          systemInstruction: "You are an expert interview simulator and executive technical coach.",
-          temperature: 0.3,
-        },
+      const { data, provider, model } = await generateJSON<{ pairs?: unknown }>({
+        apiKey,
+        system: "You are an expert interview simulator and executive technical coach.",
+        prompt: promptPayload,
+        schema: QA_SCHEMA,
       });
 
-      res.json({
-        report: response.text || "No interview questions generated by the model.",
-        modelUsed: activeModel,
-      });
+      const pairs = data?.pairs;
+      if (!Array.isArray(pairs) || pairs.length === 0) {
+        return res.status(502).json({ error: "The model returned no questions. Try again." });
+      }
+
+      res.json({ pairs, modelUsed: model, provider });
     } catch (error: any) {
       console.error("Error in /api/interview/questions:", error);
-      res.status(500).json({ error: error?.message || "An unexpected error occurred during interview question generation." });
+      fail(res, error, "An unexpected error occurred during interview question generation.");
     }
   });
 
-  // 3. Interview Evaluation Endpoint
+  // 3. Interview Evaluation Endpoint (interviewer-side scoring ledger)
   app.post("/api/interview/evaluate", async (req, res) => {
     try {
-      const { scoringTable, metricTable, questionSimulationReport, customPrompt, apiKey, model } = req.body;
+      const { scoringTable, metricTable, questionSimulationReport, customPrompt, apiKey } = req.body;
 
       const activePrompt = (customPrompt && customPrompt.trim()) || DEFAULT_EVALUATION_PROMPT;
-      const activeModel = model || "gemini-3.5-flash";
 
       const promptPayload = `
 Interview Scorecard Metrics:
@@ -353,30 +516,28 @@ Instructions of report format is as follows:
 ${activePrompt}
 `;
 
-      const ai = getGeminiClient(apiKey);
-      const response = await ai.models.generateContent({
-        model: activeModel,
-        contents: promptPayload,
-        config: {
-          systemInstruction: "You are an expert HR decision support engine and leadership psychometric analyzer.",
-          temperature: 0.2,
-        },
+      const { text, provider, model } = await generate({
+        apiKey,
+        system:
+          "You are an expert HR decision support engine and leadership psychometric analyzer.",
+        prompt: promptPayload,
       });
 
       res.json({
-        report: response.text || "No evaluation report generated by the model.",
-        modelUsed: activeModel,
+        report: text || "No evaluation report generated by the model.",
+        modelUsed: model,
+        provider,
       });
     } catch (error: any) {
       console.error("Error in /api/interview/evaluate:", error);
-      res.status(500).json({ error: error?.message || "An unexpected error occurred during interview evaluation." });
+      fail(res, error, "An unexpected error occurred during interview evaluation.");
     }
   });
 
   // 4. AI Content Detection Endpoint
-  // Uses ZeroGPT's public detection API (free, no key required).
-  // Fast-DetectGPT (https://github.com/baoguangsheng/fast-detect-gpt) has no public API
-  // and requires local PyTorch + 2-8B parameter models to run. If you have a local
+  // Runs entirely locally — no API key, no external call. Fast-DetectGPT
+  // (https://github.com/baoguangsheng/fast-detect-gpt) has no public API and
+  // requires local PyTorch + 2-8B parameter models to run. If you have a local
   // fast-detect-gpt server running (python scripts/local_infer.py --api), set
   // FAST_DETECT_GPT_URL=http://localhost:8765/detect in .env and it will be used instead.
   app.post("/api/ai-detect", async (req, res) => {
@@ -418,7 +579,7 @@ ${activePrompt}
 
     } catch (error: any) {
       console.error("Error in /api/ai-detect:", error);
-      res.status(500).json({ error: error?.message || "AI detection service unavailable. Try again later." });
+      fail(res, error, "AI detection service unavailable. Try again later.");
     }
   });
 

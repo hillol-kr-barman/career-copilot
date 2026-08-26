@@ -1,5 +1,5 @@
 import React from "react";
-import { Plus, Trash2, Sliders, ChevronDown } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { ScoreRow, MetricRow } from "../types";
 
 interface InterviewScoringTableProps {
