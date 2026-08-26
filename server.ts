@@ -607,9 +607,22 @@ ${activePrompt}
         schema: QA_SCHEMA,
       });
 
-      const pairs = data?.pairs;
-      if (!Array.isArray(pairs) || pairs.length === 0) {
-        return res.status(502).json({ error: "The model returned no questions. Try again." });
+      // The schema is a request, not a guarantee. An item missing `question` or
+      // `answer` renders as a blank card and throws inside the PDF exporter
+      // (`doc.splitTextToSize(undefined)`), so drop malformed items here rather
+      // than letting the client assume the shape held.
+      const raw = data?.pairs;
+      const pairs = (Array.isArray(raw) ? raw : []).filter(
+        (p: any) =>
+          p &&
+          typeof p.question === "string" &&
+          p.question.trim() &&
+          typeof p.answer === "string" &&
+          p.answer.trim()
+      );
+
+      if (pairs.length === 0) {
+        return res.status(502).json({ error: "The model returned no usable questions. Try again." });
       }
 
       res.json({ pairs, modelUsed: model, provider });
