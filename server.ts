@@ -346,9 +346,13 @@ async function startServer() {
 
   // Shared error responder so every route reports auth/format failures with the
   // right status instead of collapsing everything into a 500.
+  // `statusCode` is what our own errors carry; the OpenAI and Anthropic SDKs
+  // put it on `.status`. Reading only the former reported every rate limit and
+  // rejected key as a 500 — a server bug rather than something the user can act on.
   const fail = (res: express.Response, error: any, fallbackMsg: string) => {
-    const status = error?.statusCode ?? 500;
-    res.status(status).json({ error: error?.message || fallbackMsg });
+    const status = error?.statusCode ?? error?.status ?? 500;
+    res.status(typeof status === "number" && status >= 400 && status < 600 ? status : 500)
+      .json({ error: error?.message || fallbackMsg });
   };
 
   // API Config / Status. Deliberately says nothing about keys or models: this

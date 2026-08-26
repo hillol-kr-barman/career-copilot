@@ -329,7 +329,19 @@ export async function resolveProvider(apiKey?: string): Promise<ProviderInfo> {
     return info;
   }
 
-  if (detected) throw lastError ?? authError("That API key was rejected.");
+  if (detected) {
+    if (!lastError) throw authError("That API key was rejected.");
+    // Our own errors (from `authError`) already carry a message written for the
+    // user. Anything else is a raw SDK error whose `.message` can embed the
+    // provider's JSON envelope — and for OpenAI, the caller's organization id
+    // and quota configuration. Never let that reach the browser untouched.
+    if (typeof lastError.statusCode === "number") throw lastError;
+
+    const { message, status } = describeProviderError(lastError, PROVIDER_LABELS[detected]);
+    const wrapped: any = new Error(message);
+    wrapped.statusCode = status;
+    throw wrapped;
+  }
 
   throw authError(
     "That key wasn't accepted by Google, OpenAI, or Anthropic. Check that you copied all of it, and that it's an API key rather than a project or client ID."
@@ -466,11 +478,17 @@ function describeProviderError(err: any, providerName: string): { message: strin
       const parsed = JSON.parse(raw.slice(jsonStart));
       const e = parsed?.error ?? parsed;
       if (typeof e?.message === "string") inner = e.message;
-      if (typeof e?.code === "number") code = e.code;
+      // Only fill in from the envelope — a nested `code` must never override the
+      // real HTTP status, or a 503 body carrying `code: 400` gets reported as a
+      // client error (and vice versa).
+      if (code === undefined && typeof e?.code === "number") code = e.code;
     } catch {
       /* not JSON after all — keep the raw text */
     }
   }
+
+  // OpenAI prefixes its message with the status ("429 Rate limit reached…").
+  inner = inner.replace(/^\d{3}\s+/, "");
 
   const blob = `${inner} ${raw}`.toLowerCase();
 
@@ -486,7 +504,10 @@ function describeProviderError(err: any, providerName: string): { message: strin
       message: `Your ${providerName} key has hit its rate limit or quota. Wait a minute, or check your usage limits in the provider console.`,
     };
   }
-  if (code === 401 || code === 403) {
+  // Google reports a bad key as HTTP 400, not 401, so the status alone doesn't
+  // identify it — match the message too, or the UI says "unexpected error" when
+  // the real problem is a key the user can fix.
+  if (code === 401 || code === 403 || /api key not valid|invalid api key|api key expired|incorrect api key/.test(blob)) {
     return {
       status: 401,
       message: `${providerName} rejected your API key. Check that it's still valid and has access to text models.`,
@@ -499,11 +520,22 @@ function describeProviderError(err: any, providerName: string): { message: strin
 /** Errors worth retrying on a different model — the model is busy, not broken. */
 function isTransient(err: any): boolean {
   const code = err?.status ?? err?.statusCode;
+
+  // A 4xx is the provider rejecting the request itself, not the model being
+  // busy — retrying it on three more models burns the user's quota to fail the
+  // same way. This must short-circuit before the text match below: "Invalid API
+  // key, please try again." contains "try again" and otherwise reads as
+  // transient. 408 and 429 are the genuinely retryable exceptions.
+  if (typeof code === "number" && code >= 400 && code < 500 && code !== 408 && code !== 429) {
+    return false;
+  }
+
   const blob = `${err?.message ?? ""}`.toLowerCase();
   return (
     code === 503 ||
     code === 429 ||
     code === 500 ||
+    code === 408 ||
     /unavailable|overloaded|high demand|internal error|try again/.test(blob)
   );
 }
