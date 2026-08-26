@@ -109,7 +109,6 @@ src/
     FileUploader.tsx               Drag-and-drop upload with real server-side text extraction
     ToolSection.tsx                Shared chrome and locked-state handling for each tool
     InterviewScoringTable.tsx      Editable STAR/competency scoring ledger with sliders
-    StackingContainer.tsx          Numbered "step card" layout
   sections/
     AiDetection.tsx                Tool 1
     ResumeAudit.tsx                Tool 2
@@ -117,7 +116,6 @@ src/
   lib/
     download.ts                    Blob download helper (revokes its object URLs)
     exportQA.ts                    Lazy-loaded PDF and DOCX generation
-public/background/                 Optional custom background image (see its own README)
 ```
 
 ## Tech Stack

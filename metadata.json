@@ -1,6 +1,0 @@
-{
-  "name": "Career Copilot",
-  "description": "An AI-powered career assistant to optimize resumes, generate personalized interview questions, and analyze performance with dynamic stacking card visualizations.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
