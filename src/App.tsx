@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import prismHero from "./assets/images/prism_hero_1781065935616.png";
 import { ApiKeySetup } from "./components/ApiKeySetup";
 import { SharedInputs } from "./components/SharedInputs";
+import { StoredDataNotice } from "./components/StoredDataNotice";
 import { AiDetection } from "./sections/AiDetection";
 import { ResumeAudit } from "./sections/ResumeAudit";
 import { InterviewPrep } from "./sections/InterviewPrep";
@@ -98,6 +99,34 @@ export default function App() {
     localStorage.setItem(API_KEY_STORAGE_KEY, val);
   };
 
+  /**
+   * Remove everything this browser holds for the app.
+   *
+   * Named explicitly rather than clearing localStorage wholesale: on a shared
+   * origin (localhost during development, or a domain hosting more than this
+   * app) `localStorage.clear()` would take other applications' data with it.
+   *
+   * Includes two names this version no longer writes but earlier ones did.
+   * `user_gemini_api_key` is still read by `loadApiKey` as a fallback, so
+   * leaving it would resurrect the key on the next load and make the button
+   * look broken; `selected_gemini_model` is dead residue that nothing reads,
+   * and clearing "everything" ought to mean it.
+   */
+  const handleClearStoredData = () => {
+    for (const key of [
+      CONTEXT_STORAGE_KEY,
+      API_KEY_STORAGE_KEY,
+      "user_gemini_api_key",
+      "selected_gemini_model",
+    ]) {
+      localStorage.removeItem(key);
+    }
+    setContext(EMPTY_CONTEXT);
+    setApiKey("");
+    setProviderInfo(null);
+    setVerifyError("");
+  };
+
   return (
     <div className="flex flex-col min-h-screen text-[#eef0f3] selection:bg-[#00d4dc] selection:text-[#0a0c0d]">
       {/* Header — sticky. The translucent bar is the chrome itself rather than a
@@ -181,6 +210,13 @@ export default function App() {
         <ResumeAudit context={context} apiKey={apiKey} />
 
         <InterviewPrep context={context} apiKey={apiKey} />
+
+        <StoredDataNotice
+          hasResume={Boolean(context.resumeText.trim())}
+          hasJobDescription={Boolean(context.jobDescription.trim())}
+          hasApiKey={Boolean(apiKey.trim())}
+          onClear={handleClearStoredData}
+        />
       </main>
 
       <footer className="w-full mt-auto border-t border-[rgba(255,255,255,0.07)] bg-[#0e1012]">
