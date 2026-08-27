@@ -8,7 +8,15 @@ services:
   - type: web
     name: career-copilot
     runtime: node
-    plan: starter # free tier sleeps after ~15 min idle; first visitor then waits ~30s
+    # No credit card required. 750 instance hours per workspace per month —
+    # enough for one always-available service, since a single service running
+    # continuously uses ~730. Free web services spin down after 15 minutes of
+    # inactivity and take roughly a minute to wake, so the first person to open
+    # the site after a quiet spell waits for a cold start.
+    #
+    # Upgrade path if that wait becomes annoying: `starter` (~$7/mo) never
+    # sleeps. Nothing else in this file changes.
+    plan: free
     region: singapore # move this to the region nearest your users
     branch: main
 
