@@ -61,9 +61,11 @@ export const AiDetection: React.FC<AiDetectionProps> = ({ resumeText }) => {
     >
       <div className="flex flex-col gap-4">
         <p className="text-xs text-[#9aa3b0] leading-relaxed">
-          Recruiters increasingly screen for AI-written applications. This runs six linguistic
-          signals — sentence burstiness, vocabulary richness, AI-hallmark phrasing, transition
-          density, sentence length and punctuation variety — entirely on the server, offline.
+          Recruiters increasingly screen for AI-written applications. This runs five linguistic
+          signals — AI-hallmark phrasing, transition density, punctuation variety, sentence
+          burstiness and sentence length — entirely on the server, offline. It's a heuristic,
+          not proof: formal human writing can score high, and an LLM told to write plainly can
+          score low. Read it as a prompt to look closer, not a verdict.
         </p>
 
         <button

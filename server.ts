@@ -23,6 +23,16 @@ const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5MB — matches what the uploader a
  */
 const MAX_DETECT_CHARS = 50_000;
 
+/**
+ * Floor on text handed to the detector. Every signal it uses is a density or a
+ * variance, and none of them mean anything on one sentence: the old 50-character
+ * floor let an 11-word input through, where a single connector reads as 10 per
+ * 100 words and saturates a signal outright. 400 characters is roughly a short
+ * paragraph — still small, but enough for the statistics to be about the writing
+ * rather than about the sample size.
+ */
+const MIN_DETECT_CHARS = 400;
+
 // Base64 inflates by 4/3. Rejecting on the encoded length first means an
 // oversized payload never gets decoded into a second full-size Buffer.
 const MAX_BASE64_CHARS = Math.ceil(MAX_UPLOAD_BYTES * 1.37);
@@ -550,8 +560,10 @@ ${activePrompt}
       if (typeof rawInput !== "string" || !rawInput.trim()) {
         return res.status(400).json({ error: "Text is required." });
       }
-      if (rawInput.trim().length < 50) {
-        return res.status(400).json({ error: "Text too short — please provide at least 50 characters for reliable detection." });
+      if (rawInput.trim().length < MIN_DETECT_CHARS) {
+        return res.status(400).json({
+          error: `Text too short — please provide at least ${MIN_DETECT_CHARS} characters (roughly a paragraph). Below that the result says more about the sample size than the writing.`,
+        });
       }
 
       // Bounded before any scanning happens. This route takes no API key, so
@@ -588,7 +600,12 @@ ${activePrompt}
 
       // Option 2: Local statistical AI text detection — no external API, works offline.
       // Combines multiple linguistic signals known to differ between human and AI writing.
-      const score = detectAiStatistically(text);
+      const { score, signals, words } = detectAiStatistically(text);
+
+      const breakdown = Object.entries(signals)
+        .map(([k, v]) => `${k}:${v.toFixed(2)}`)
+        .join(" ");
+      console.log(`[ai-detect] ${words}w ${breakdown} → ${score.toFixed(2)}`);
 
       return res.json({
         aiProbability: Math.round(score * 100),
