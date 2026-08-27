@@ -1,6 +1,7 @@
 import React, { useState } from "react";
-import { Sparkles, RefreshCw, AlertTriangle, Download, Target } from "lucide-react";
+import { Sparkles, RefreshCw, AlertTriangle, Download, Target, SlidersHorizontal } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
+import { CollapsibleSection } from "../components/CollapsibleSection";
 import { FileUploader } from "../components/FileUploader";
 import { downloadText } from "../lib/download";
 import { RenderMarkdown } from "../lib/renderMarkdown";
@@ -206,45 +207,46 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
       lockedReason={lockedReason}
     >
       <div className="flex flex-col gap-5">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
-          <FileUploader
-            id="audit_custom_prompt"
-            label="Override the audit prompt (optional)"
-            placeholderText="Drop a custom prompt file"
-            onTextLoaded={(text, filename) => {
-              setCustomPrompt(text);
-              setCustomPromptFileName(filename);
-            }}
-          />
+        <div className="flex flex-col gap-4">
+          <p className="text-xs text-[#9aa3b0] leading-relaxed max-w-2xl">
+            Your resume is scored against this specific job description. The first three tabs
+            answer the questions that matter; the remaining ten hold the full report.
+          </p>
 
-          <div className="flex flex-col gap-3 justify-center">
-            <p className="text-xs text-[#9aa3b0] leading-relaxed">
-              Your resume is scored against this specific job description. The first three tabs
-              answer the questions that matter; the remaining ten hold the full report.
-            </p>
-            {customPromptFileName && (
-              <p className="text-[11px] text-[#00d4dc] font-mono">
-                Using custom prompt: {customPromptFileName}
-              </p>
+          <button
+            onClick={handleAnalyze}
+            disabled={isAnalyzing}
+            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+          >
+            {isAnalyzing ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Auditing…</span>
+              </>
+            ) : (
+              <>
+                <Target className="w-4 h-4" />
+                <span>Audit my resume</span>
+              </>
             )}
-            <button
-              onClick={handleAnalyze}
-              disabled={isAnalyzing}
-              className="w-full inline-flex items-center justify-center gap-2 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-xs uppercase tracking-widest py-3.5 px-4 rounded-[5px] active:scale-95 transition-all disabled:opacity-50"
-            >
-              {isAnalyzing ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Auditing…</span>
-                </>
-              ) : (
-                <>
-                  <Target className="w-3.5 h-3.5" />
-                  <span>Audit my resume</span>
-                </>
-              )}
-            </button>
-          </div>
+          </button>
+
+          <CollapsibleSection
+            icon={<SlidersHorizontal className="w-3.5 h-3.5" />}
+            title="Override the audit prompt"
+            subtitle="Optional — replace the built-in audit instructions with your own"
+            badge={customPromptFileName || null}
+          >
+            <FileUploader
+              id="audit_custom_prompt"
+              label="Custom audit prompt"
+              placeholderText="Drop a custom prompt file"
+              onTextLoaded={(text, filename) => {
+                setCustomPrompt(text);
+                setCustomPromptFileName(filename);
+              }}
+            />
+          </CollapsibleSection>
         </div>
 
         {error && (

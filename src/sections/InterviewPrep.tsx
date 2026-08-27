@@ -9,8 +9,10 @@ import {
   FileType2,
   ChevronDown,
   ClipboardList,
+  SlidersHorizontal,
 } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
+import { CollapsibleSection } from "../components/CollapsibleSection";
 import { FileUploader } from "../components/FileUploader";
 import { InterviewScoringTable } from "../components/InterviewScoringTable";
 import { downloadText } from "../lib/download";
@@ -47,7 +49,6 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
   const [exporting, setExporting] = useState<null | "pdf" | "docx">(null);
 
   // ── Scoring ledger (interviewer-facing) ────────────────────────────────
-  const [showLedger, setShowLedger] = useState(false);
   const [scoreRows, setScoreRows] = useState<ScoreRow[]>([blankRow("Interview question #1")]);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluationText, setEvaluationText] = useState("");
@@ -178,47 +179,48 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
       lockedReason={lockedReason}
     >
       <div className="flex flex-col gap-5">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
-          <FileUploader
-            id="interview_custom_prompt"
-            label="Override the coaching prompt (optional)"
-            placeholderText="Drop a custom prompt file"
-            onTextLoaded={(text, filename) => {
-              setCustomPrompt(text);
-              setCustomPromptFileName(filename);
-            }}
-          />
+        <div className="flex flex-col gap-4">
+          <p className="text-xs text-[#9aa3b0] leading-relaxed max-w-2xl">
+            Questions are tailored to the job description, your resume
+            {context.appliedPosition ? ` and the ${context.appliedPosition} role` : ""}. Your
+            education is read from the resume, and every answer is grounded in what it actually
+            says.
+          </p>
 
-          <div className="flex flex-col gap-3 justify-center">
-            <p className="text-xs text-[#9aa3b0] leading-relaxed">
-              Questions are tailored to the job description, your resume
-              {context.appliedPosition ? ` and the ${context.appliedPosition} role` : ""}. Your
-              education is read from the resume, and every answer is grounded in what it actually
-              says.
-            </p>
-            {customPromptFileName && (
-              <p className="text-[11px] text-[#00d4dc] font-mono">
-                Using custom prompt: {customPromptFileName}
-              </p>
+          <button
+            onClick={handleGenerate}
+            disabled={isGenerating}
+            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+          >
+            {isGenerating ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Preparing your set…</span>
+              </>
+            ) : (
+              <>
+                <MessagesSquare className="w-4 h-4" />
+                <span>Generate questions &amp; answers</span>
+              </>
             )}
-            <button
-              onClick={handleGenerate}
-              disabled={isGenerating}
-              className="w-full inline-flex items-center justify-center gap-2 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-xs uppercase tracking-widest py-3.5 px-4 rounded-[5px] active:scale-95 transition-all disabled:opacity-50"
-            >
-              {isGenerating ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Preparing your set…</span>
-                </>
-              ) : (
-                <>
-                  <MessagesSquare className="w-3.5 h-3.5" />
-                  <span>Generate questions &amp; answers</span>
-                </>
-              )}
-            </button>
-          </div>
+          </button>
+
+          <CollapsibleSection
+            icon={<SlidersHorizontal className="w-3.5 h-3.5" />}
+            title="Override the coaching prompt"
+            subtitle="Optional — replace the built-in coaching instructions with your own"
+            badge={customPromptFileName || null}
+          >
+            <FileUploader
+              id="interview_custom_prompt"
+              label="Custom coaching prompt"
+              placeholderText="Drop a custom prompt file"
+              onTextLoaded={(text, filename) => {
+                setCustomPrompt(text);
+                setCustomPromptFileName(filename);
+              }}
+            />
+          </CollapsibleSection>
         </div>
 
         {error && (
@@ -231,44 +233,9 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
         {/* ── Q&A set ──────────────────────────────────────────────────── */}
         {pairs.length > 0 && (
           <div className="flex flex-col gap-4 border-t border-[rgba(255,255,255,0.07)] pt-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-[10px] font-bold text-[#6b7685] tracking-wider uppercase">
-                {pairs.length} question{pairs.length === 1 ? "" : "s"} prepared
-              </span>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => handleExport("pdf")}
-                  disabled={exporting !== null}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95 disabled:opacity-50"
-                >
-                  {exporting === "pdf" ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <FileType2 className="w-3.5 h-3.5" />
-                  )}
-                  PDF
-                </button>
-                <button
-                  onClick={() => handleExport("docx")}
-                  disabled={exporting !== null}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95 disabled:opacity-50"
-                >
-                  {exporting === "docx" ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <FileText className="w-3.5 h-3.5" />
-                  )}
-                  DOCX
-                </button>
-                <button
-                  onClick={() => downloadText("interview-prep-qa.txt", qaToPlainText(pairs, exportMeta))}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] border border-[rgba(255,255,255,0.07)] text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] text-xs font-semibold transition-all active:scale-95"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  TXT
-                </button>
-              </div>
-            </div>
+            <span className="text-[10px] font-bold text-[#6b7685] tracking-wider uppercase">
+              {pairs.length} question{pairs.length === 1 ? "" : "s"} prepared
+            </span>
 
             <ol className="flex flex-col gap-2">
               {pairs.map((pair, i) => {
@@ -321,33 +288,82 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                 );
               })}
             </ol>
+
+            {/* Export lives below the set: it is the last thing you want once
+                you've read the questions, and it was previously a row of small
+                chips above the fold that read as labels rather than actions. */}
+            <div className="border-t border-[rgba(255,255,255,0.07)] pt-5 flex flex-col gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-[#eef0f3]">Download your prep pack</h3>
+                <p className="text-xs text-[#6b7685] mt-1">
+                  All {pairs.length} question{pairs.length === 1 ? "" : "s"} with model answers.
+                  Pick a format.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <button
+                  onClick={() => handleExport("pdf")}
+                  disabled={exporting !== null}
+                  className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-left"
+                >
+                  {exporting === "pdf" ? (
+                    <RefreshCw className="w-5 h-5 animate-spin shrink-0" />
+                  ) : (
+                    <FileType2 className="w-5 h-5 shrink-0" />
+                  )}
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold">
+                      {exporting === "pdf" ? "Building…" : "PDF"}
+                    </span>
+                    <span className="block text-[11px] text-[#6b7685]">Print or share</span>
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => handleExport("docx")}
+                  disabled={exporting !== null}
+                  className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-left"
+                >
+                  {exporting === "docx" ? (
+                    <RefreshCw className="w-5 h-5 animate-spin shrink-0" />
+                  ) : (
+                    <FileText className="w-5 h-5 shrink-0" />
+                  )}
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold">
+                      {exporting === "docx" ? "Building…" : "Word"}
+                    </span>
+                    <span className="block text-[11px] text-[#6b7685]">Editable .docx</span>
+                  </span>
+                </button>
+
+                <button
+                  onClick={() =>
+                    downloadText("interview-prep-qa.txt", qaToPlainText(pairs, exportMeta))
+                  }
+                  disabled={exporting !== null}
+                  className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] text-[#9aa3b0] hover:text-[#eef0f3] hover:border-[rgba(255,255,255,0.14)] transition-all active:scale-[0.98] disabled:opacity-50 text-left"
+                >
+                  <Download className="w-5 h-5 shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold">Plain text</span>
+                    <span className="block text-[11px] text-[#6b7685]">Paste anywhere</span>
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
         {/* ── Interviewer scoring ledger (optional) ────────────────────── */}
-        <div className="border-t border-[rgba(255,255,255,0.07)] pt-5 flex flex-col gap-4">
-          <button
-            onClick={() => setShowLedger(!showLedger)}
-            className="flex items-center gap-2.5 text-left w-full group"
+        <div className="border-t border-[rgba(255,255,255,0.07)] pt-5">
+          <CollapsibleSection
+            icon={<ClipboardList className="w-3.5 h-3.5" />}
+            title="Interviewer scoring ledger"
+            subtitle="Score practice answers on STAR and competency, then compile an executive assessment"
           >
-            <span className="p-2 rounded-[6px] bg-[#1c2128] border border-[rgba(255,255,255,0.07)] text-[#6b7685] group-hover:text-[#9aa3b0] transition-colors">
-              <ClipboardList className="w-4 h-4" />
-            </span>
-            <span className="flex-1">
-              <span className="block text-sm font-semibold text-[#eef0f3]">
-                Interviewer scoring ledger
-              </span>
-              <span className="block text-xs text-[#6b7685] mt-0.5">
-                Score practice answers on STAR and competency, then compile an executive assessment
-              </span>
-            </span>
-            <ChevronDown
-              className={`w-4 h-4 text-[#6b7685] shrink-0 transition-transform ${showLedger ? "rotate-180" : ""}`}
-            />
-          </button>
-
-          {showLedger && (
-            <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-5 pt-2">
               <InterviewScoringTable scoreRows={scoreRows} onChange={setScoreRows} />
 
               {/* Aggregates */}
@@ -409,40 +425,41 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-                <FileUploader
-                  id="eval_custom_prompt"
-                  label="Override the assessment prompt (optional)"
-                  placeholderText="Drop a custom assessor prompt"
-                  onTextLoaded={(text, filename) => {
-                    setCustomEvalPrompt(text);
-                    setEvalPromptFileName(filename);
-                  }}
-                />
-                <div className="flex flex-col gap-3 justify-center">
-                  {evalPromptFileName && (
-                    <p className="text-[11px] text-[#00d4dc] font-mono">
-                      Using custom prompt: {evalPromptFileName}
-                    </p>
+              <div className="flex flex-col gap-3">
+                <button
+                  onClick={handleEvaluate}
+                  disabled={isEvaluating || !apiKey.trim()}
+                  className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm py-4 uppercase tracking-widest rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+                >
+                  {isEvaluating ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Compiling analytics…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>Compile executive assessment</span>
+                    </>
                   )}
-                  <button
-                    onClick={handleEvaluate}
-                    disabled={isEvaluating || !apiKey.trim()}
-                    className="w-full inline-flex items-center justify-center gap-2 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-xs py-3.5 uppercase tracking-widest rounded-[5px] active:scale-95 transition-all disabled:opacity-50"
-                  >
-                    {isEvaluating ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Compiling analytics…</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4" />
-                        <span>Compile executive assessment</span>
-                      </>
-                    )}
-                  </button>
-                </div>
+                </button>
+
+                <CollapsibleSection
+                  icon={<SlidersHorizontal className="w-3.5 h-3.5" />}
+                  title="Override the assessment prompt"
+                  subtitle="Optional — replace the built-in assessor instructions with your own"
+                  badge={evalPromptFileName || null}
+                >
+                  <FileUploader
+                    id="eval_custom_prompt"
+                    label="Custom assessor prompt"
+                    placeholderText="Drop a custom assessor prompt"
+                    onTextLoaded={(text, filename) => {
+                      setCustomEvalPrompt(text);
+                      setEvalPromptFileName(filename);
+                    }}
+                  />
+                </CollapsibleSection>
               </div>
 
               {evaluationText && (
@@ -465,7 +482,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                 </div>
               )}
             </div>
-          )}
+          </CollapsibleSection>
         </div>
       </div>
     </ToolSection>
