@@ -1,0 +1,45 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploy: Render dashboard → New → Blueprint → pick this repo. Render reads this
+# file, so the build and start commands do not need to be typed into the UI and
+# cannot drift from what is in version control.
+
+services:
+  - type: web
+    name: career-copilot
+    runtime: node
+    plan: starter # free tier sleeps after ~15 min idle; first visitor then waits ~30s
+    region: singapore # move this to the region nearest your users
+    branch: main
+
+    # `--include=dev` is required, not stylistic. NODE_ENV=production below
+    # applies to the build as well as the runtime, and npm skips
+    # devDependencies when it is set. esbuild, typescript and tailwindcss all
+    # live there, so a plain `npm ci` produces "esbuild: not found" at build.
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+
+    # Outside the /api/ rate limiter on purpose — see the route in server.ts.
+    healthCheckPath: /healthz
+
+    envVars:
+      # Switches on the CSP and makes the server serve dist/ instead of booting
+      # Vite's dev middleware. Without it the deploy builds but serves nothing.
+      - key: NODE_ENV
+        value: production
+
+      - key: NODE_VERSION
+        value: "22"
+
+      # Render terminates TLS one hop in front of the app. Without this,
+      # express-rate-limit sees the proxy's IP for every request and buckets all
+      # visitors together.
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+
+      # Intentionally unset: FAST_DETECT_GPT_URL. When set, every resume
+      # submitted to /api/ai-detect is forwarded verbatim to that host.
+      #
+      # Also intentionally absent: any provider API key. This app is
+      # bring-your-own-key — each visitor supplies their own from the browser,
+      # and the server holds no key of its own.

@@ -238,11 +238,42 @@ async function extractResumeText(fileName: string, buffer: Buffer): Promise<stri
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+
+  // Managed hosts (Render, Railway, Fly, Heroku) assign the port and expect the
+  // process to bind whatever they put in $PORT — a hardcoded port fails their
+  // health check with "no open ports detected". 3000 stays the local default.
+  const PORT = Number(process.env.PORT) || 3000;
 
   const isProduction = process.env.NODE_ENV === "production";
 
+  /**
+   * Behind a managed host the app sees the proxy's IP on every request, not the
+   * caller's. Without this, express-rate-limit buckets every visitor together —
+   * the 5/min identify limit would be shared by the whole cohort — and v8
+   * refuses to start when it detects an X-Forwarded-For header it was not told
+   * to trust.
+   *
+   * Set to the number of proxy hops in front of the app. Render, Railway and
+   * Fly all terminate at one. Never enable this off a trusted proxy: the header
+   * is caller-controlled, so a spoofed X-Forwarded-For would defeat rate
+   * limiting entirely.
+   */
+  const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS ?? (isProduction ? 1 : 0));
+  if (trustProxyHops > 0) app.set("trust proxy", trustProxyHops);
+
   app.disable("x-powered-by");
+
+  /**
+   * Health check, deliberately mounted before the /api/ rate limiter.
+   *
+   * Managed hosts poll this every few seconds. Behind the limiter those polls
+   * would eat the caller's budget and, once the service was busy, start
+   * returning 429 — which the host reads as unhealthy and responds to by
+   * restarting the very service that was merely under load.
+   */
+  app.get("/healthz", (_req, res) => {
+    res.json({ status: "ok", uptime: Math.round(process.uptime()) });
+  });
 
   // The API key lives in localStorage, so any XSS hands it over — a CSP that
   // forbids inline script is the control that matters here.
@@ -650,7 +681,10 @@ ${activePrompt}
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT} in ${process.env.NODE_ENV || "development"} mode`);
+    console.log(
+      `Server running on http://0.0.0.0:${PORT} in ${process.env.NODE_ENV || "development"} mode` +
+        (trustProxyHops > 0 ? ` (trusting ${trustProxyHops} proxy hop)` : "")
+    );
   });
 }
 
