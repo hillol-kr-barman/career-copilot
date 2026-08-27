@@ -240,24 +240,40 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // No CSP source in this app is remote, and the API key lives in localStorage
-  // — any XSS hands it over, so the CSP is worth having. `contentSecurityPolicy`
-  // is configured rather than defaulted because Vite's dev client needs inline
-  // styles and a websocket back to the dev server.
+  const isProduction = process.env.NODE_ENV === "production";
+
   app.disable("x-powered-by");
+
+  // The API key lives in localStorage, so any XSS hands it over — a CSP that
+  // forbids inline script is the control that matters here.
+  //
+  // It is applied in production only. Vite's dev server injects an inline
+  // React-refresh preamble into index.html, and `script-src 'self'` blocks it,
+  // which kills the app before it boots and leaves a white screen. The
+  // production bundle contains no inline script at all — every entry is an
+  // external `src=` — so the strict policy costs nothing where it counts, and
+  // the dev-only gap is a local machine serving its own code.
   app.use(
     helmet({
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          scriptSrc: ["'self'"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
-          imgSrc: ["'self'", "data:"],
-          connectSrc: ["'self'", ...(process.env.NODE_ENV !== "production" ? ["ws:"] : [])],
-          objectSrc: ["'none'"],
-          frameAncestors: ["'self'"],
-        },
-      },
+      contentSecurityPolicy: isProduction
+        ? {
+            useDefaults: true,
+            directives: {
+              defaultSrc: ["'self'"],
+              scriptSrc: ["'self'"],
+              styleSrc: ["'self'", "'unsafe-inline'"],
+              imgSrc: ["'self'", "data:"],
+              connectSrc: ["'self'"],
+              objectSrc: ["'none'"],
+              frameAncestors: ["'self'"],
+              // Deliberately dropped from helmet's defaults: this server is
+              // commonly run on plain http behind a TLS-terminating proxy, and
+              // upgrading same-origin asset requests to https there breaks
+              // every asset. HSTS below is the right tool for that job.
+              upgradeInsecureRequests: null,
+            },
+          }
+        : false,
       // The app serves its own assets only; COEP breaks the Vite dev client.
       crossOriginEmbedderPolicy: false,
     })
