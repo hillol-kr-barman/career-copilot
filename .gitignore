@@ -6,4 +6,13 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local-only working documents: planning notes, codebase maps, review write-ups
+# and assistant/editor state. These describe the work, not the product, and some
+# of it (the code review) catalogues weak points — it does not belong in the
+# repo even while it is private.
 .claude
+.planning/
+.gsd/
+CLAUDE.md
+AGENTS.md
