@@ -25,7 +25,9 @@ export const ToolSection: React.FC<ToolSectionProps> = ({
   return (
     <section
       id={id}
-      className="w-full scroll-mt-6 rounded-[10px] bg-[#161a1e] border border-[rgba(255,255,255,0.07)] p-5 md:p-7 flex flex-col gap-5"
+      // scroll-mt clears the sticky header (h-14) so an anchored heading isn't
+      // hidden underneath it when the nav links jump here.
+      className="w-full scroll-mt-20 rounded-[10px] bg-[#161a1e] border border-[rgba(255,255,255,0.07)] p-5 md:p-7 flex flex-col gap-5"
     >
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[rgba(255,255,255,0.07)] pb-4">
         <div className="flex items-center gap-2.5">
