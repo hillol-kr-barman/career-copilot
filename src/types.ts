@@ -75,3 +75,56 @@ export interface ProviderInfo {
   providerLabel: string;
   model: string;
 }
+
+/**
+ * Which physical audio source a recorder is attached to. This is a routing
+ * label, never an identity — the mic track is whoever is at this laptop, the
+ * tab track is whoever is on the call (D-06).
+ */
+export type StreamRole = "candidate" | "interviewer";
+
+/** The visitor's own role in this interview — the single toggle from D-07. */
+export type UserRole = "candidate" | "interviewer";
+
+/** Lifecycle of a Tool 4 capture session, from idle through stopped. */
+export type CaptureStatus = "idle" | "connecting" | "armed" | "recording" | "paused" | "stopped";
+
+/**
+ * One `sessions` IndexedDB record. `clockOrigin` is the shared
+ * `performance.now()` origin both recorders' chunk timestamps are measured
+ * from — this, not `startedAt`, is what lets Phase 5 merge the two streams
+ * by time (D-03).
+ */
+export interface RecordingSession {
+  sessionId: string;
+  startedAt: number;
+  clockOrigin: number;
+  userRole: UserRole;
+  mimeType: string;
+  status: "recording" | "stopped";
+  durationMs: number;
+}
+
+/** Metadata for one recorded chunk, without its payload. */
+export interface AudioChunkMeta {
+  sessionId: string;
+  streamRole: StreamRole;
+  seq: number;
+  tsMs: number;
+  size: number;
+  mimeType: string;
+}
+
+/** One `chunks` IndexedDB record — metadata plus the actual audio bytes. */
+export interface AudioChunkRecord extends AudioChunkMeta {
+  blob: Blob;
+}
+
+/** Aggregate stats for one stream's stored chunks, for the download surface. */
+export interface StreamSummary {
+  role: StreamRole;
+  chunkCount: number;
+  readableCount: number;
+  totalBytes: number;
+  durationMs: number;
+}
