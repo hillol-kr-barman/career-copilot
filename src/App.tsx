@@ -6,6 +6,7 @@ import { StoredDataNotice } from "./components/StoredDataNotice";
 import { AiDetection } from "./sections/AiDetection";
 import { ResumeAudit } from "./sections/ResumeAudit";
 import { InterviewPrep } from "./sections/InterviewPrep";
+import { LiveInterview } from "./sections/LiveInterview";
 import { ProviderInfo, SharedContext } from "./types";
 
 const CONTEXT_STORAGE_KEY = "cc_shared_context";
@@ -161,6 +162,12 @@ export default function App() {
               >
                 Interview Prep
               </a>
+              <a
+                href="#tool-live-interview"
+                className="px-2 md:px-3 py-2 rounded-[5px] text-[11px] md:text-xs font-semibold tracking-wide text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] transition-all"
+              >
+                Live Interview
+              </a>
             </nav>
           </div>
         </div>
@@ -210,6 +217,8 @@ export default function App() {
         <ResumeAudit context={context} apiKey={apiKey} />
 
         <InterviewPrep context={context} apiKey={apiKey} />
+
+        <LiveInterview />
 
         <StoredDataNotice
           hasResume={Boolean(context.resumeText.trim())}
