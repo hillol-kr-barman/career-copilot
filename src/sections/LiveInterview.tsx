@@ -1,7 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { RefreshCw, AlertTriangle, Circle, Square, Download } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
-import { acquireMic, acquireTabAudio, stopStream } from "../lib/audioCapture";
+import {
+  acquireMic,
+  acquireTabAudio,
+  stopStream,
+  isTabAudioLikelySupported,
+  describeCaptureError,
+  TAB_AUDIO_UNSUPPORTED_REASON,
+  UNSUPPORTED_FORMAT_REASON,
+} from "../lib/audioCapture";
 import { pickSupportedMimeType, resolveStreamRoles, startRecorderPair } from "../lib/recorderPair";
 import type { RecorderPairHandle } from "../lib/recorderPair";
 import {
@@ -38,6 +46,21 @@ export const LiveInterview: React.FC = () => {
   const [session, setSession] = useState<RecordingSession | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState("");
+  const [tabAudioMissing, setTabAudioMissing] = useState(false);
+  const [acknowledgedSilentTab, setAcknowledgedSilentTab] = useState(false);
+  const [formatUnsupported, setFormatUnsupported] = useState(false);
+
+  // UA-family capability gate (D-01, D-05) — computed once, it does not
+  // change over the component's lifetime.
+  const [tabAudioSupported] = useState(() => isTabAudioLikelySupported());
+
+  // This chain gates on browser capability only, never on resume, job
+  // description or API key — Tool 4 needs no key at all.
+  const lockedReason = !tabAudioSupported
+    ? TAB_AUDIO_UNSUPPORTED_REASON
+    : formatUnsupported
+      ? UNSUPPORTED_FORMAT_REASON
+      : null;
 
   const dbRef = useRef<IDBDatabase | null>(null);
   const recorderHandleRef = useRef<RecorderPairHandle | null>(null);
@@ -75,11 +98,21 @@ export const LiveInterview: React.FC = () => {
 
   const handleConnect = async () => {
     setError("");
+    setTabAudioMissing(false);
+    setAcknowledgedSilentTab(false);
     setStatus("connecting");
+
     let mic: MediaStream | null = null;
-    let tab: MediaStream | null = null;
     try {
       mic = await acquireMic();
+    } catch (err) {
+      setStatus("idle");
+      setError(describeCaptureError(err, "mic"));
+      return;
+    }
+
+    let tab: MediaStream | null = null;
+    try {
       const tabResult = await acquireTabAudio();
       tab = tabResult.stream;
 
@@ -91,22 +124,55 @@ export const LiveInterview: React.FC = () => {
 
       setMicStream(mic);
       setTabStream(tab);
+      setTabAudioMissing(!tabResult.hasAudio);
       setStatus("armed");
     } catch (err) {
       stopStream(mic);
       stopStream(tab);
       setStatus("idle");
-      setError(
-        err instanceof Error ? err.message : "Could not connect the microphone and screen."
-      );
+      setError(describeCaptureError(err, "display"));
+    }
+  };
+
+  /**
+   * Re-invoked from the tab-audio-missing banner: releases the previous,
+   * silent tab stream and requests a fresh share, re-running the same
+   * `getAudioTracks()` check (Pitfall 2 — the picker resolving is not proof
+   * the audio checkbox was ticked).
+   */
+  const handleShareAgain = async () => {
+    setError("");
+    try {
+      const tabResult = await acquireTabAudio();
+
+      if (cancelledRef.current) {
+        stopStream(tabResult.stream);
+        return;
+      }
+
+      stopStream(tabStream);
+      setTabStream(tabResult.stream);
+      setTabAudioMissing(!tabResult.hasAudio);
+      if (tabResult.hasAudio) setAcknowledgedSilentTab(false);
+    } catch (err) {
+      setError(describeCaptureError(err, "display"));
     }
   };
 
   const handleBegin = async () => {
     if (!micStream || !tabStream) return;
     setError("");
+
+    let mimeType: string;
     try {
-      const mimeType = pickSupportedMimeType();
+      mimeType = pickSupportedMimeType();
+    } catch (err) {
+      setFormatUnsupported(true);
+      setError(describeCaptureError(err, "display"));
+      return;
+    }
+
+    try {
       const db = await openRecordingDB();
       const sessionId = crypto.randomUUID();
       const roleMap = resolveStreamRoles(DEFAULT_USER_ROLE);
@@ -178,7 +244,7 @@ export const LiveInterview: React.FC = () => {
       step="Tool 4"
       title="Live Interview"
       subtitle="Record a remote interview as two clean audio tracks — nothing leaves this browser"
-      lockedReason={null}
+      lockedReason={lockedReason}
     >
       <div className="flex flex-col gap-5">
         {error && (
@@ -208,13 +274,42 @@ export const LiveInterview: React.FC = () => {
         )}
 
         {status === "armed" && (
-          <button
-            onClick={handleBegin}
-            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-          >
-            <Circle className="w-4 h-4" />
-            <span>Begin recording</span>
-          </button>
+          <div className="flex flex-col gap-3">
+            {tabAudioMissing && !acknowledgedSilentTab && (
+              <div className="w-full flex items-start gap-2.5 text-xs text-red-500 bg-red-500/10 border border-red-500/15 rounded-[6px] px-4 py-4">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="flex flex-col gap-3 flex-1">
+                  <span>
+                    You shared without ticking 'Share tab audio' — the interviewer's side won't
+                    be recorded. Click 'Share again' and make sure the audio checkbox is ticked
+                    before you confirm.
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={handleShareAgain}
+                      className="px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
+                    >
+                      Share again
+                    </button>
+                    <button
+                      onClick={() => setAcknowledgedSilentTab(true)}
+                      className="px-3 py-1.5 rounded-[5px] border border-[rgba(255,255,255,0.07)] bg-transparent text-[#9aa3b0] hover:text-[#eef0f3] text-xs font-medium transition-all active:scale-95"
+                    >
+                      Record anyway (interviewer audio will be silent)
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            <button
+              onClick={handleBegin}
+              disabled={tabAudioMissing && !acknowledgedSilentTab}
+              className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+            >
+              <Circle className="w-4 h-4" />
+              <span>Begin recording</span>
+            </button>
+          </div>
         )}
 
         {(status === "recording" || status === "paused") && (
