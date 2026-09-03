@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import { RefreshCw, AlertTriangle, Circle, Square, Download } from "lucide-react";
+import { RefreshCw, AlertTriangle, Circle, Square, Download, Headphones } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
+import { ConsentGate } from "../components/ConsentGate";
 import {
   acquireMic,
   acquireTabAudio,
@@ -21,6 +22,23 @@ import {
 } from "../lib/recordingStore";
 import { downloadBlob } from "../lib/download";
 import type { CaptureStatus, RecordingSession, StreamRole, UserRole } from "../types";
+
+/**
+ * Session-scoped only (D-09) — one checkbox, once per browser session, not
+ * once forever; this key is never written to any storage that outlives the
+ * tab. A blocked `sessionStorage` (private browsing) degrades to false,
+ * which simply re-asks; that is the correct conservative behaviour, not an
+ * error state.
+ */
+const CONSENT_SESSION_KEY = "live_interview_consent_given";
+
+const readStoredConsent = (): boolean => {
+  try {
+    return sessionStorage.getItem(CONSENT_SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
 
 // D-07's default: the visitor is the candidate until plan 04-02's role
 // toggle replaces this constant with the toggle's live value.
@@ -49,6 +67,7 @@ export const LiveInterview: React.FC = () => {
   const [tabAudioMissing, setTabAudioMissing] = useState(false);
   const [acknowledgedSilentTab, setAcknowledgedSilentTab] = useState(false);
   const [formatUnsupported, setFormatUnsupported] = useState(false);
+  const [hasConsented, setHasConsented] = useState(readStoredConsent);
 
   // UA-family capability gate (D-01, D-05) — computed once, it does not
   // change over the component's lifetime.
@@ -69,8 +88,16 @@ export const LiveInterview: React.FC = () => {
     tab: null,
   });
   const cancelledRef = useRef(false);
+  const connectButtonRef = useRef<HTMLButtonElement | null>(null);
 
   liveStreamsRef.current = { mic: micStream, tab: tabStream };
+
+  // Consent resolving unmounts the gate's own "Continue" button — focus
+  // would otherwise be stranded on a node that no longer exists. Move it to
+  // the CTA that takes its place, once that CTA exists to receive it.
+  useEffect(() => {
+    if (hasConsented) connectButtonRef.current?.focus();
+  }, [hasConsented]);
 
   // StrictMode-safe teardown: acquisition happens behind a button click
   // rather than on mount, but if the section unmounts while a capture is
@@ -95,6 +122,17 @@ export const LiveInterview: React.FC = () => {
     }, 1000);
     return () => window.clearInterval(id);
   }, [status, session]);
+
+  const handleAcceptConsent = () => {
+    try {
+      sessionStorage.setItem(CONSENT_SESSION_KEY, "1");
+    } catch {
+      // Private-mode/blocked sessionStorage: consent still applies for the
+      // rest of this render, it just won't survive a reload — re-asking is
+      // the correct conservative fallback (see readStoredConsent above).
+    }
+    setHasConsented(true);
+  };
 
   const handleConnect = async () => {
     setError("");
@@ -247,118 +285,141 @@ export const LiveInterview: React.FC = () => {
       lockedReason={lockedReason}
     >
       <div className="flex flex-col gap-5">
-        {error && (
-          <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
+        {/* Crash-recovery slot (plan 04-05) renders above everything else,
+            including the consent gate, once it exists. */}
 
-        {status === "idle" && (
-          <button
-            onClick={handleConnect}
-            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-          >
-            <span>Connect microphone &amp; screen</span>
-          </button>
-        )}
+        {!hasConsented ? (
+          <ConsentGate onAccept={handleAcceptConsent} />
+        ) : (
+          <>
+            {error && (
+              <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
 
-        {status === "connecting" && (
-          <button
-            disabled
-            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] disabled:opacity-50"
-          >
-            <RefreshCw className="w-4 h-4 animate-spin" />
-            <span>Connecting to microphone and screen…</span>
-          </button>
-        )}
+            <div className="flex items-start gap-2.5 bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-4">
+              <div className="p-1.5 rounded-[6px] shrink-0 border bg-amber-500/10 border-amber-500/20 text-amber-400">
+                <Headphones className="w-4 h-4" />
+              </div>
+              <p className="text-xs text-[#9aa3b0] leading-relaxed">
+                Wear headphones during the call. Laptop speakers leak the interviewer's voice into
+                your microphone, which blurs the separation between the two tracks — the entire
+                point of recording two separate streams.
+              </p>
+            </div>
 
-        {status === "armed" && (
-          <div className="flex flex-col gap-3">
-            {tabAudioMissing && !acknowledgedSilentTab && (
-              <div className="w-full flex items-start gap-2.5 text-xs text-red-500 bg-red-500/10 border border-red-500/15 rounded-[6px] px-4 py-4">
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <div className="flex flex-col gap-3 flex-1">
-                  <span>
-                    You shared without ticking 'Share tab audio' — the interviewer's side won't
-                    be recorded. Click 'Share again' and make sure the audio checkbox is ticked
-                    before you confirm.
-                  </span>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={handleShareAgain}
-                      className="px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
-                    >
-                      Share again
-                    </button>
-                    <button
-                      onClick={() => setAcknowledgedSilentTab(true)}
-                      className="px-3 py-1.5 rounded-[5px] border border-[rgba(255,255,255,0.07)] bg-transparent text-[#9aa3b0] hover:text-[#eef0f3] text-xs font-medium transition-all active:scale-95"
-                    >
-                      Record anyway (interviewer audio will be silent)
-                    </button>
+            {status === "idle" && (
+              <button
+                ref={connectButtonRef}
+                onClick={handleConnect}
+                className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+              >
+                <span>Connect microphone &amp; screen</span>
+              </button>
+            )}
+
+            {status === "connecting" && (
+              <button
+                disabled
+                className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] disabled:opacity-50"
+              >
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Connecting to microphone and screen…</span>
+              </button>
+            )}
+
+            {status === "armed" && (
+              <div className="flex flex-col gap-3">
+                {tabAudioMissing && !acknowledgedSilentTab && (
+                  <div className="w-full flex items-start gap-2.5 text-xs text-red-500 bg-red-500/10 border border-red-500/15 rounded-[6px] px-4 py-4">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div className="flex flex-col gap-3 flex-1">
+                      <span>
+                        You shared without ticking 'Share tab audio' — the interviewer's side
+                        won't be recorded. Click 'Share again' and make sure the audio checkbox
+                        is ticked before you confirm.
+                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={handleShareAgain}
+                          className="px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
+                        >
+                          Share again
+                        </button>
+                        <button
+                          onClick={() => setAcknowledgedSilentTab(true)}
+                          className="px-3 py-1.5 rounded-[5px] border border-[rgba(255,255,255,0.07)] bg-transparent text-[#9aa3b0] hover:text-[#eef0f3] text-xs font-medium transition-all active:scale-95"
+                        >
+                          Record anyway (interviewer audio will be silent)
+                        </button>
+                      </div>
+                    </div>
                   </div>
+                )}
+                <button
+                  onClick={handleBegin}
+                  disabled={tabAudioMissing && !acknowledgedSilentTab}
+                  className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+                >
+                  <Circle className="w-4 h-4" />
+                  <span>Begin recording</span>
+                </button>
+              </div>
+            )}
+
+            {(status === "recording" || status === "paused") && (
+              <div className="flex flex-col items-center gap-3">
+                <span className="text-4xl font-extrabold font-mono text-[#eef0f3] tracking-tight">
+                  {formatElapsed(elapsedMs)}
+                </span>
+                <button
+                  onClick={handleStop}
+                  className="w-full inline-flex items-center justify-center gap-2.5 bg-red-500 hover:opacity-90 text-white font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all"
+                >
+                  <Square className="w-4 h-4" />
+                  <span>Stop recording</span>
+                </button>
+              </div>
+            )}
+
+            {status === "stopped" && (
+              <div className="flex flex-col gap-4 border-t border-[rgba(255,255,255,0.07)] pt-5">
+                <div>
+                  <h3 className="text-sm font-semibold text-[#eef0f3]">
+                    Download your recording
+                  </h3>
+                  <p className="text-xs text-[#6b7685] mt-1">
+                    Two separate audio files — one per speaker. Recording complete —{" "}
+                    {formatElapsed(elapsedMs)}.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    onClick={() => handleDownload("candidate", "candidate-audio.webm")}
+                    className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] text-left"
+                  >
+                    <Download className="w-5 h-5 shrink-0" />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold">Candidate audio</span>
+                      <span className="block text-[11px] text-[#6b7685]">Your microphone</span>
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => handleDownload("interviewer", "interviewer-audio.webm")}
+                    className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] text-left"
+                  >
+                    <Download className="w-5 h-5 shrink-0" />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold">Interviewer audio</span>
+                      <span className="block text-[11px] text-[#6b7685]">Tab audio</span>
+                    </span>
+                  </button>
                 </div>
               </div>
             )}
-            <button
-              onClick={handleBegin}
-              disabled={tabAudioMissing && !acknowledgedSilentTab}
-              className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-            >
-              <Circle className="w-4 h-4" />
-              <span>Begin recording</span>
-            </button>
-          </div>
-        )}
-
-        {(status === "recording" || status === "paused") && (
-          <div className="flex flex-col items-center gap-3">
-            <span className="text-4xl font-extrabold font-mono text-[#eef0f3] tracking-tight">
-              {formatElapsed(elapsedMs)}
-            </span>
-            <button
-              onClick={handleStop}
-              className="w-full inline-flex items-center justify-center gap-2.5 bg-red-500 hover:opacity-90 text-white font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all"
-            >
-              <Square className="w-4 h-4" />
-              <span>Stop recording</span>
-            </button>
-          </div>
-        )}
-
-        {status === "stopped" && (
-          <div className="flex flex-col gap-4 border-t border-[rgba(255,255,255,0.07)] pt-5">
-            <div>
-              <h3 className="text-sm font-semibold text-[#eef0f3]">Download your recording</h3>
-              <p className="text-xs text-[#6b7685] mt-1">
-                Two separate audio files — one per speaker. Recording complete —{" "}
-                {formatElapsed(elapsedMs)}.
-              </p>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button
-                onClick={() => handleDownload("candidate", "candidate-audio.webm")}
-                className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] text-left"
-              >
-                <Download className="w-5 h-5 shrink-0" />
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold">Candidate audio</span>
-                  <span className="block text-[11px] text-[#6b7685]">Your microphone</span>
-                </span>
-              </button>
-              <button
-                onClick={() => handleDownload("interviewer", "interviewer-audio.webm")}
-                className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] text-left"
-              >
-                <Download className="w-5 h-5 shrink-0" />
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold">Interviewer audio</span>
-                  <span className="block text-[11px] text-[#6b7685]">Tab audio</span>
-                </span>
-              </button>
-            </div>
-          </div>
+          </>
         )}
       </div>
     </ToolSection>
