@@ -1,12 +1,16 @@
 import React, { useState } from "react";
-import { HardDrive, Trash2, Check } from "lucide-react";
+import { HardDrive, Trash2, Check, AlertTriangle } from "lucide-react";
+
+/** The two outcomes a clear attempt can end in — the visitor is told which
+ * actually happened rather than always being told "Cleared" (LIVE-09). */
+export type ClearOutcome = "cleared" | "incomplete";
 
 interface StoredDataNoticeProps {
   hasResume: boolean;
   hasJobDescription: boolean;
   hasApiKey: boolean;
   hasRecordings: boolean;
-  onClear: () => void | Promise<void>;
+  onClear: () => Promise<ClearOutcome>;
 }
 
 /**
@@ -27,6 +31,7 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
 }) => {
   const [isConfirming, setIsConfirming] = useState(false);
   const [justCleared, setJustCleared] = useState(false);
+  const [clearIncomplete, setClearIncomplete] = useState(false);
 
   const stored = [
     hasResume && "your resume",
@@ -43,10 +48,14 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
         : `${stored.slice(0, -1).join(", ")} and ${stored[stored.length - 1]}`;
 
   const handleClear = async () => {
-    await onClear();
+    const outcome = await onClear();
     setIsConfirming(false);
-    setJustCleared(true);
-    window.setTimeout(() => setJustCleared(false), 4000);
+    if (outcome === "cleared") {
+      setJustCleared(true);
+      window.setTimeout(() => setJustCleared(false), 4000);
+    } else {
+      setClearIncomplete(true);
+    }
   };
 
   return (
@@ -66,7 +75,15 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
       </div>
 
       <div className="shrink-0 sm:text-right">
-        {justCleared ? (
+        {clearIncomplete ? (
+          <span
+            role="status"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-400"
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            Some of it is still here — close any other tabs running this app, then try again.
+          </span>
+        ) : justCleared ? (
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-500">
             <Check className="w-3.5 h-3.5" />
             Cleared
@@ -89,7 +106,10 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
           </div>
         ) : (
           <button
-            onClick={() => setIsConfirming(true)}
+            onClick={() => {
+              setClearIncomplete(false);
+              setIsConfirming(true);
+            }}
             disabled={stored.length === 0}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[5px] border border-[rgba(255,255,255,0.07)] text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
           >

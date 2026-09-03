@@ -3,6 +3,7 @@ import prismHero from "./assets/images/prism_hero_1781065935616.png";
 import { ApiKeySetup } from "./components/ApiKeySetup";
 import { SharedInputs } from "./components/SharedInputs";
 import { StoredDataNotice } from "./components/StoredDataNotice";
+import type { ClearOutcome } from "./components/StoredDataNotice";
 import { AiDetection } from "./sections/AiDetection";
 import { ResumeAudit } from "./sections/ResumeAudit";
 import { InterviewPrep } from "./sections/InterviewPrep";
@@ -124,7 +125,7 @@ export default function App() {
    * The `live_interview_recordings` IndexedDB database is named for the same
    * reason (D-12): explicit deletion by name, never a bulk clear.
    */
-  const handleClearStoredData = async () => {
+  const handleClearStoredData = async (): Promise<ClearOutcome> => {
     for (const key of [
       CONTEXT_STORAGE_KEY,
       API_KEY_STORAGE_KEY,
@@ -137,15 +138,15 @@ export default function App() {
     // Report what is actually on disk, not what was requested: a "blocked"
     // or "error" outcome means the database is still there, so re-probe
     // rather than assuming the delete took (LIVE-09).
-    if (deleteOutcome === "deleted") {
-      setHasRecordings(false);
-    } else {
-      setHasRecordings(await hasStoredRecordings());
-    }
+    const stillPresent = deleteOutcome === "deleted" ? false : await hasStoredRecordings();
+    setHasRecordings(stillPresent);
+    // The localStorage side genuinely was cleared even when the database
+    // was not — this reset always runs, in both outcomes.
     setContext(EMPTY_CONTEXT);
     setApiKey("");
     setProviderInfo(null);
     setVerifyError("");
+    return stillPresent ? "incomplete" : "cleared";
   };
 
   return (
