@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Download, Headphones } from "lucide-react";
+import { AlertTriangle, Download, Headphones, RefreshCw } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
 import { ConsentGate } from "../components/ConsentGate";
 import { RoleToggle } from "../components/RoleToggle";
 import { RecordingControls } from "../components/RecordingControls";
+import { CrashRecoveryPrompt } from "../components/CrashRecoveryPrompt";
 import {
   acquireMic,
   acquireTabAudio,
@@ -24,10 +25,20 @@ import {
   appendChunk,
   markSessionStopped,
   assembleBlob,
+  findResumableSession,
+  pruneOlderSessions,
+  deleteSession,
+  nextSeqFor,
 } from "../lib/recordingStore";
+import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob } from "../lib/download";
 import type { CaptureStatus, RecordingSession, StreamRole, UserRole } from "../types";
 import type { RecordingWarning } from "../components/RecordingControls";
+
+/** Copy from the UI-SPEC Copywriting Contract — a recovered session whose
+ * chunks can't be read (restore threw, or nothing was actually stored). */
+const RECOVERY_FAILED_COPY =
+  "This recording couldn't be recovered — the saved data may be corrupted or incomplete. It has been discarded automatically.";
 
 /**
  * Session-scoped only (D-09) — one checkbox, once per browser session, not
@@ -65,6 +76,20 @@ export const LiveInterview: React.FC = () => {
   const [hasConsented, setHasConsented] = useState(readStoredConsent);
   const [role, setRole] = useState<UserRole>("candidate");
 
+  // Crash recovery (LIVE-06, D-13): findResumableSession scans on mount,
+  // before any gate renders. recoveryScanning covers the (expected-instant)
+  // window while that scan is in flight; recoveryInfo holds the newest
+  // unfinished session once found; recoveryError surfaces the recovery-
+  // failed copy for a session that turned out to be unreadable.
+  const [recoveryInfo, setRecoveryInfo] = useState<ResumableSessionInfo | null>(null);
+  const [recoveryScanning, setRecoveryScanning] = useState(true);
+  const [recoveryError, setRecoveryError] = useState("");
+  // True from the moment "Resume this session" is clicked until the next
+  // "Begin recording" actually consumes resumeSeedRef — the role toggle is
+  // disabled for this window so a role change can't flip which physical
+  // stream the recovered chunks' sequence numbers apply to.
+  const [isResumingSession, setIsResumingSession] = useState(false);
+
   // D-14: a soft, dismissible notice when the platform refuses the screen
   // wake lock — the refusal never blocks or interrupts recording.
   const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
@@ -95,6 +120,19 @@ export const LiveInterview: React.FC = () => {
   });
   const cancelledRef = useRef(false);
   const connectButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  // Populated by handleResumeRecovery, consumed once by the next
+  // handleBegin: carries the recovered session's identity forward so the
+  // next recording continues the same session instead of starting a new
+  // one, and continues sequence numbering / chunk timestamps rather than
+  // restarting either at zero.
+  const resumeSeedRef = useRef<{
+    sessionId: string;
+    mimeType: string;
+    startedAt: number;
+    seedSeq: Partial<Record<StreamRole, number>>;
+    tsOffsetMs: number;
+  } | null>(null);
 
   // Level meters are observability only (T-04-13) — created once both streams
   // exist, read from a rAF loop in RecordingControls, and never on the
@@ -141,6 +179,28 @@ export const LiveInterview: React.FC = () => {
       stopStream(liveStreamsRef.current.tab);
       recorderHandleRef.current?.stopAll().catch(() => {});
       releaseWakeLock();
+    };
+  }, []);
+
+  // Crash-recovery scan: runs once on mount, before any gate renders,
+  // including the consent gate. When a session is found, every older
+  // unfinished session is pruned in the same pass — storage can hold more
+  // than one (crash twice, there are two) — so exactly one prompt is ever
+  // shown, naming the newest.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const found = await findResumableSession();
+      if (cancelled) return;
+      if (found) {
+        await pruneOlderSessions(found.session.sessionId);
+        if (cancelled) return;
+        setRecoveryInfo(found);
+      }
+      setRecoveryScanning(false);
+    })();
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -232,6 +292,65 @@ export const LiveInterview: React.FC = () => {
     return () => window.clearInterval(id);
   }, [status, session]);
 
+  /**
+   * "Discard and start new": deletes the recovered session's record and all
+   * of its chunks, and clears the prompt. Used both for the visitor's own
+   * two-step confirm and, internally, for a session that turns out to be
+   * unreadable.
+   */
+  const handleDiscardRecovery = async () => {
+    if (!recoveryInfo) return;
+    await deleteSession(recoveryInfo.session.sessionId);
+    setRecoveryInfo(null);
+  };
+
+  /**
+   * "Resume this session": seeds resumeSeedRef with everything the next
+   * handleBegin needs to continue the same session — its id, mimeType,
+   * original start time (so a second crash still shows the true relative
+   * time), and each stream's next sequence number — then restores the
+   * recorded userRole and clears the prompt so the visitor reconnects their
+   * microphone and share from the normal idle state. A session with no
+   * readable chunks, or one whose sequence lookup throws, is treated as
+   * unreadable: shown the recovery-failed copy, discarded, and the tool
+   * falls through to a normal fresh start rather than leaving a broken
+   * prompt on screen.
+   */
+  const handleResumeRecovery = async () => {
+    if (!recoveryInfo) return;
+    const { session: recovered, chunkCounts, latestTsMs } = recoveryInfo;
+    const totalChunks = (chunkCounts.candidate ?? 0) + (chunkCounts.interviewer ?? 0);
+
+    if (totalChunks === 0) {
+      await deleteSession(recovered.sessionId);
+      setRecoveryInfo(null);
+      setRecoveryError(RECOVERY_FAILED_COPY);
+      return;
+    }
+
+    try {
+      const [candidateSeq, interviewerSeq] = await Promise.all([
+        nextSeqFor(recovered.sessionId, "candidate"),
+        nextSeqFor(recovered.sessionId, "interviewer"),
+      ]);
+
+      resumeSeedRef.current = {
+        sessionId: recovered.sessionId,
+        mimeType: recovered.mimeType,
+        startedAt: recovered.startedAt,
+        seedSeq: { candidate: candidateSeq, interviewer: interviewerSeq },
+        tsOffsetMs: latestTsMs,
+      };
+      setIsResumingSession(true);
+      setRole(recovered.userRole);
+      setRecoveryInfo(null);
+    } catch {
+      await deleteSession(recovered.sessionId);
+      setRecoveryInfo(null);
+      setRecoveryError(RECOVERY_FAILED_COPY);
+    }
+  };
+
   const handleAcceptConsent = () => {
     try {
       sessionStorage.setItem(CONSENT_SESSION_KEY, "1");
@@ -310,26 +429,50 @@ export const LiveInterview: React.FC = () => {
     if (!micStream || !tabStream) return;
     setError("");
 
+    // A resumed session reuses its recovered mimeType rather than
+    // re-negotiating one — mixing mimeTypes within one assembled download
+    // would risk a codec mismatch the player can't reconcile.
+    const resumeSeed = resumeSeedRef.current;
+
     let mimeType: string;
-    try {
-      mimeType = pickSupportedMimeType();
-    } catch (err) {
-      setFormatUnsupported(true);
-      setError(describeCaptureError(err, "display"));
-      return;
+    if (resumeSeed) {
+      mimeType = resumeSeed.mimeType;
+    } else {
+      try {
+        mimeType = pickSupportedMimeType();
+      } catch (err) {
+        setFormatUnsupported(true);
+        setError(describeCaptureError(err, "display"));
+        return;
+      }
     }
 
     try {
       const db = await openRecordingDB();
-      const sessionId = crypto.randomUUID();
+      const sessionId = resumeSeed?.sessionId ?? crypto.randomUUID();
       const roleMap = resolveStreamRoles(role);
+
+      // Resuming continues sequence numbering and chunk timestamps from
+      // where the recovered session left off (LIVE-06) rather than
+      // restarting either at zero — startRecorderPair always counts from 0
+      // per instance, so the offset is applied here, per physical stream,
+      // as each chunk arrives.
+      const seedSeq = resumeSeed
+        ? {
+            mic: resumeSeed.seedSeq[roleMap.mic] ?? 0,
+            tab: resumeSeed.seedSeq[roleMap.tab] ?? 0,
+          }
+        : { mic: 0, tab: 0 };
+      const tsOffsetMs = resumeSeed?.tsOffsetMs ?? 0;
 
       const handle = startRecorderPair(
         micStream,
         tabStream,
         roleMap,
         (meta, blob) => {
-          appendChunk(db, { ...meta, sessionId }, blob).catch((chunkErr) => {
+          const seqOffset = meta.streamRole === roleMap.mic ? seedSeq.mic : seedSeq.tab;
+          const adjusted = { ...meta, sessionId, seq: meta.seq + seqOffset, tsMs: meta.tsMs + tsOffsetMs };
+          appendChunk(db, adjusted, blob).catch((chunkErr) => {
             setError(
               chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk."
             );
@@ -340,7 +483,7 @@ export const LiveInterview: React.FC = () => {
 
       const newSession = await createSession(db, {
         sessionId,
-        startedAt: Date.now(),
+        startedAt: resumeSeed?.startedAt ?? Date.now(),
         clockOrigin: handle.clockOrigin,
         userRole: role,
         mimeType,
@@ -348,10 +491,12 @@ export const LiveInterview: React.FC = () => {
 
       dbRef.current = db;
       recorderHandleRef.current = handle;
-      pausedMsRef.current = 0;
+      pausedMsRef.current = resumeSeed ? -tsOffsetMs : 0;
       pauseStartRef.current = null;
+      resumeSeedRef.current = null;
+      setIsResumingSession(false);
       setSession(newSession);
-      setElapsedMs(0);
+      setElapsedMs(resumeSeed ? tsOffsetMs : 0);
       setStatus("recording");
 
       // A wake-lock refusal is a soft warning, never a reason to stop or
@@ -444,8 +589,31 @@ export const LiveInterview: React.FC = () => {
       lockedReason={lockedReason}
     >
       <div className="flex flex-col gap-5">
-        {/* Crash-recovery slot (plan 04-05) renders above everything else,
-            including the consent gate, once it exists. */}
+        {/* Crash-recovery slot renders above everything else in the tool
+            body, including the consent gate (LIVE-06, D-13) — this state
+            can appear with no user action at all, on a page load after a
+            crash. */}
+        {recoveryScanning ? (
+          <div className="flex items-center gap-2.5 text-xs text-[#9aa3b0] bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] px-4 py-4">
+            <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+            <span>Checking for an unfinished recording…</span>
+          </div>
+        ) : recoveryInfo ? (
+          <CrashRecoveryPrompt
+            session={recoveryInfo.session}
+            capturedDurationMs={recoveryInfo.latestTsMs}
+            chunkCounts={recoveryInfo.chunkCounts}
+            onResume={handleResumeRecovery}
+            onDiscard={handleDiscardRecovery}
+          />
+        ) : null}
+
+        {recoveryError && (
+          <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{recoveryError}</span>
+          </div>
+        )}
 
         {!hasConsented ? (
           <ConsentGate onAccept={handleAcceptConsent} />
@@ -461,7 +629,7 @@ export const LiveInterview: React.FC = () => {
             <RoleToggle
               role={role}
               onRoleChange={setRole}
-              disabled={status !== "idle" && status !== "armed"}
+              disabled={isResumingSession || (status !== "idle" && status !== "armed")}
             />
 
             <div className="flex items-start gap-2.5 bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-4">
