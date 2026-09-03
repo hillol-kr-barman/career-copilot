@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Download, Headphones, RefreshCw } from "lucide-react";
+import { AlertTriangle, Headphones, RefreshCw } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
 import { ConsentGate } from "../components/ConsentGate";
 import { RoleToggle } from "../components/RoleToggle";
 import { RecordingControls } from "../components/RecordingControls";
 import { CrashRecoveryPrompt } from "../components/CrashRecoveryPrompt";
+import { RecordingDownloads } from "../components/RecordingDownloads";
 import {
   acquireMic,
   acquireTabAudio,
@@ -29,7 +30,7 @@ import {
   createSession,
   appendChunk,
   markSessionStopped,
-  assembleBlob,
+  assembleStreamBlob,
   findResumableSession,
   pruneOlderSessions,
   deleteSession,
@@ -37,7 +38,14 @@ import {
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob } from "../lib/download";
-import type { AudioChunkMeta, CaptureStatus, RecordingSession, StreamRole, UserRole } from "../types";
+import type {
+  AudioChunkMeta,
+  CaptureStatus,
+  RecordingSession,
+  StreamRole,
+  StreamSummary,
+  UserRole,
+} from "../types";
 import type { RecordingWarning } from "../components/RecordingControls";
 
 /** Copy from the UI-SPEC Copywriting Contract — a recovered session whose
@@ -111,6 +119,21 @@ export const LiveInterview: React.FC = () => {
   // a second one. Never stops the microphone recorder or the session.
   const [shareRevoked, setShareRevoked] = useState(false);
 
+  // LIVE-08 download surface (plan 04-06): both streams' summaries and
+  // unreadable-chunk counts, derived once via assembleStreamBlob at the
+  // moment the session stops. interviewerNearSilent is true only when the
+  // interviewer stream produced bytes but never rose above the near-silence
+  // threshold for the whole session — tracked live in tabEverAudibleRef
+  // below, independent of the (grace-period-gated) silence-watchdog banner.
+  const [candidateSummary, setCandidateSummary] = useState<StreamSummary | null>(null);
+  const [interviewerSummary, setInterviewerSummary] = useState<StreamSummary | null>(null);
+  const [candidateUnreadableCount, setCandidateUnreadableCount] = useState(0);
+  const [interviewerUnreadableCount, setInterviewerUnreadableCount] = useState(0);
+  const [interviewerNearSilent, setInterviewerNearSilent] = useState(false);
+  const [downloadingRoles, setDownloadingRoles] = useState<Partial<Record<StreamRole, boolean>>>(
+    {}
+  );
+
   // UA-family capability gate (D-01, D-05) — computed once, it does not
   // change over the component's lifetime.
   const [tabAudioSupported] = useState(() => isTabAudioLikelySupported());
@@ -175,6 +198,15 @@ export const LiveInterview: React.FC = () => {
   // the silence watchdog below. Reset whenever the level rises again or a
   // recording is not actively in progress.
   const silenceStartRef = useRef<number | null>(null);
+
+  // Whether the interviewer (tab) stream was ever read above the
+  // near-silence threshold at any point this recording — reset at the start
+  // of each new/resumed recording (handleBegin). Read at stop time to derive
+  // interviewerNearSilent for the download surface (LIVE-08). Independent of
+  // the grace-period-gated silence-watchdog banner above: this flag has no
+  // grace period, since it must reflect the whole session's history, not
+  // just a live warning.
+  const tabEverAudibleRef = useRef(false);
 
   liveStreamsRef.current = { mic: micStream, tab: tabStream };
 
@@ -307,10 +339,18 @@ export const LiveInterview: React.FC = () => {
     }
 
     const id = window.setInterval(() => {
+      const level = tabMeterRef.current?.read();
+
+      // Feeds the download surface's mostly-silent badge (LIVE-08) — tracked
+      // independently of the grace period below, since it must reflect
+      // whether the stream was ever audible across the whole session.
+      if (level !== undefined && level >= NEAR_SILENCE_RMS) {
+        tabEverAudibleRef.current = true;
+      }
+
       const sinceStart = performance.now() - session.clockOrigin - pausedMsRef.current;
       if (sinceStart < SILENCE_GRACE_MS) return;
 
-      const level = tabMeterRef.current?.read();
       if (level === undefined) return; // no meter to watch — never blocks recording
 
       if (level < NEAR_SILENCE_RMS) {
@@ -557,6 +597,16 @@ export const LiveInterview: React.FC = () => {
     if (!micStream || !tabStream) return;
     setError("");
 
+    // Fresh recording (or a resumed one continuing forward): the download
+    // surface's per-session state must not leak from a previous recording,
+    // and the near-silence flag starts unset for the new/resumed span.
+    tabEverAudibleRef.current = false;
+    setCandidateSummary(null);
+    setInterviewerSummary(null);
+    setCandidateUnreadableCount(0);
+    setInterviewerUnreadableCount(0);
+    setInterviewerNearSilent(false);
+
     // A resumed session reuses its recovered mimeType rather than
     // re-negotiating one — mixing mimeTypes within one assembled download
     // would risk a codec mismatch the player can't reconcile.
@@ -690,21 +740,53 @@ export const LiveInterview: React.FC = () => {
       setShareRevoked(false);
       setElapsedMs(finalDuration);
       setStatus("stopped");
+
+      // Derive both stream summaries now that the session has stopped
+      // (LIVE-08) — this is what populates the download surface, and is
+      // separate from the full blob assembly a download click performs.
+      const [candidateResult, interviewerResult] = await Promise.all([
+        assembleStreamBlob(session.sessionId, "candidate", session.mimeType),
+        assembleStreamBlob(session.sessionId, "interviewer", session.mimeType),
+      ]);
+      setCandidateSummary(candidateResult.summary);
+      setInterviewerSummary(interviewerResult.summary);
+      setCandidateUnreadableCount(candidateResult.unreadableCount);
+      setInterviewerUnreadableCount(interviewerResult.unreadableCount);
+      setInterviewerNearSilent(
+        interviewerResult.summary.chunkCount > 0 && !tabEverAudibleRef.current
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not stop recording cleanly.");
     }
   };
 
-  const handleDownload = async (role: StreamRole, filename: string) => {
-    if (!dbRef.current || !session) return;
+  /**
+   * Re-assembles one stream's blob from storage and hands it to the visitor
+   * (LIVE-08). Deliberately separate from the summary assembly in
+   * handleStop — that call discards its blob once the summary is read, so a
+   * stopped session's download surface doesn't hold two full recordings in
+   * memory before the visitor has asked for either. Guarded against a second
+   * concurrent press of the same button; the other stream's button is
+   * unaffected (each assembly opens its own storage read). The filename
+   * comes from RecordingDownloads, which owns the role-to-filename mapping.
+   */
+  const handleDownloadStream = async (targetRole: StreamRole, filename: string) => {
+    if (!session || downloadingRoles[targetRole]) return;
     setError("");
+    setDownloadingRoles((prev) => ({ ...prev, [targetRole]: true }));
     try {
-      const blob = await assembleBlob(dbRef.current, session.sessionId, role, session.mimeType);
-      downloadBlob(filename, blob);
+      const result = await assembleStreamBlob(session.sessionId, targetRole, session.mimeType);
+      if (result.blob) {
+        downloadBlob(filename, result.blob);
+      } else {
+        setError("Could not assemble the recording for download.");
+      }
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not assemble the recording for download."
       );
+    } finally {
+      setDownloadingRoles((prev) => ({ ...prev, [targetRole]: false }));
     }
   };
 
@@ -812,40 +894,16 @@ export const LiveInterview: React.FC = () => {
               onReshareTab={handleReshareTabAfterRevoke}
             />
 
-            {status === "stopped" && (
-              <div className="flex flex-col gap-4 border-t border-[rgba(255,255,255,0.07)] pt-5">
-                <div>
-                  <h3 className="text-sm font-semibold text-[#eef0f3]">
-                    Download your recording
-                  </h3>
-                  <p className="text-xs text-[#6b7685] mt-1">
-                    Two separate audio files — one per speaker. Nothing was uploaded; these come
-                    straight from this browser's storage.
-                  </p>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <button
-                    onClick={() => handleDownload("candidate", "candidate-audio.webm")}
-                    className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] text-left"
-                  >
-                    <Download className="w-5 h-5 shrink-0" />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold">Candidate audio</span>
-                      <span className="block text-[11px] text-[#6b7685]">Your microphone</span>
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => handleDownload("interviewer", "interviewer-audio.webm")}
-                    className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] text-left"
-                  >
-                    <Download className="w-5 h-5 shrink-0" />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold">Interviewer audio</span>
-                      <span className="block text-[11px] text-[#6b7685]">Tab audio</span>
-                    </span>
-                  </button>
-                </div>
-              </div>
+            {status === "stopped" && candidateSummary && interviewerSummary && (
+              <RecordingDownloads
+                candidateSummary={candidateSummary}
+                interviewerSummary={interviewerSummary}
+                interviewerNearSilent={interviewerNearSilent}
+                candidateUnreadableCount={candidateUnreadableCount}
+                interviewerUnreadableCount={interviewerUnreadableCount}
+                downloadingRoles={downloadingRoles}
+                onDownload={handleDownloadStream}
+              />
             )}
           </>
         )}

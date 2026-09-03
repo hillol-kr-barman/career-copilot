@@ -3,8 +3,10 @@ import type {
   AudioChunkRecord,
   RecordingSession,
   StreamRole,
+  StreamSummary,
   UserRole,
 } from "../types";
+import { TIMESLICE_MS } from "./recorderPair";
 
 /**
  * Every chunk is written as its own IndexedDB record rather than appended
@@ -135,19 +137,127 @@ export async function listChunks(
   }
 }
 
-/** Concatenates one stream's stored chunks, in sequence order, into a `Blob`. */
-export async function assembleBlob(
-  db: IDBDatabase,
+/**
+ * Aggregates one stream's readable chunk metadata into the shape the
+ * download surface needs: the total chunk count found in storage, how many
+ * of those were actually readable, the summed byte size of the readable
+ * chunks, and a duration derived from the latest readable chunk's `tsMs`
+ * plus one timeslice (a chunk's timestamp marks when it was delivered, not
+ * the span it covers, so the true end of the recording is one timeslice
+ * later). Pure — touches no storage and no browser API — so Phase 7's test
+ * suite can exercise the counting and ordering logic without an IndexedDB
+ * fixture.
+ */
+export const summariseStreamChunks = (
+  role: StreamRole,
+  readableChunks: AudioChunkMeta[],
+  totalChunkCount: number
+): StreamSummary => {
+  let totalBytes = 0;
+  let maxTsMs = 0;
+  for (const chunk of readableChunks) {
+    totalBytes += chunk.size;
+    if (chunk.tsMs > maxTsMs) maxTsMs = chunk.tsMs;
+  }
+  return {
+    role,
+    chunkCount: totalChunkCount,
+    readableCount: readableChunks.length,
+    totalBytes,
+    durationMs: readableChunks.length > 0 ? maxTsMs + TIMESLICE_MS : 0,
+  };
+};
+
+/**
+ * Reads one stream's stored chunk records in sequence order and concatenates
+ * them into a single `Blob` carrying the session's negotiated mime type — no
+ * resampling, no re-encoding, no channel or rate conversion (D-19). Each
+ * record is read defensively: one that is missing, whose `blob` is absent or
+ * of the wrong shape, or whose read throws, is counted as unreadable and
+ * skipped rather than aborting the whole assembly — a partial interview
+ * recording still has real value, and refusing to hand it over because one
+ * chunk failed destroys usable evidence to protect a tidy invariant. When
+ * zero chunks are readable, the returned `blob` is `null` rather than an
+ * empty `Blob`, so the caller can distinguish "nothing to give you" from
+ * "here is a zero-length file". Resolves — never rejects — on any storage
+ * failure, matching this module's existing degrade-to-safe-default
+ * discipline; a top-level failure is reported as zero chunks found, zero
+ * readable, zero unreadable (the read simply could not happen at all).
+ */
+export const assembleStreamBlob = async (
   sessionId: string,
   streamRole: StreamRole,
   mimeType: string
-): Promise<Blob> {
-  const chunks = await listChunks(db, sessionId, streamRole);
-  return new Blob(
-    chunks.map((c) => c.blob),
-    { type: mimeType }
-  );
-}
+): Promise<{ blob: Blob | null; summary: StreamSummary; unreadableCount: number }> => {
+  try {
+    const db = await openRecordingDB();
+    const rawRecords = await new Promise<unknown[]>((resolve, reject) => {
+      const tx = db.transaction(CHUNKS_STORE, "readonly");
+      const index = tx.objectStore(CHUNKS_STORE).index(BY_SESSION_INDEX);
+      const results: unknown[] = [];
+      const req = index.openCursor(IDBKeyRange.only(sessionId));
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) {
+          resolve(results);
+          return;
+        }
+        const record = cursor.value as Record<string, unknown> | undefined;
+        if (record && record.streamRole === streamRole) results.push(record);
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+
+    const sorted = rawRecords.slice().sort((a, b) => {
+      const seqA = typeof (a as { seq?: unknown })?.seq === "number" ? (a as { seq: number }).seq : Number.MAX_SAFE_INTEGER;
+      const seqB = typeof (b as { seq?: unknown })?.seq === "number" ? (b as { seq: number }).seq : Number.MAX_SAFE_INTEGER;
+      return seqA - seqB;
+    });
+
+    const readableChunks: AudioChunkMeta[] = [];
+    const blobParts: Blob[] = [];
+    let unreadableCount = 0;
+
+    for (const raw of sorted) {
+      try {
+        const record = raw as Partial<AudioChunkRecord> | undefined;
+        if (
+          !record ||
+          !(record.blob instanceof Blob) ||
+          typeof record.size !== "number" ||
+          typeof record.tsMs !== "number" ||
+          typeof record.seq !== "number"
+        ) {
+          unreadableCount++;
+          continue;
+        }
+        blobParts.push(record.blob);
+        readableChunks.push({
+          sessionId,
+          streamRole,
+          seq: record.seq,
+          tsMs: record.tsMs,
+          size: record.size,
+          mimeType: typeof record.mimeType === "string" ? record.mimeType : mimeType,
+        });
+      } catch {
+        unreadableCount++;
+      }
+    }
+
+    const summary = summariseStreamChunks(streamRole, readableChunks, sorted.length);
+    const blob = blobParts.length > 0 ? new Blob(blobParts, { type: mimeType }) : null;
+    return { blob, summary, unreadableCount };
+  } catch {
+    return {
+      blob: null,
+      summary: summariseStreamChunks(streamRole, [], 0),
+      unreadableCount: 0,
+    };
+  }
+};
 
 /**
  * Deletes the whole `live_interview_recordings` database by name (D-12) — the
