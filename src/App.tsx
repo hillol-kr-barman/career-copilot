@@ -133,12 +133,19 @@ export default function App() {
     ]) {
       localStorage.removeItem(key);
     }
-    await deleteRecordingDB();
+    const deleteOutcome = await deleteRecordingDB();
+    // Report what is actually on disk, not what was requested: a "blocked"
+    // or "error" outcome means the database is still there, so re-probe
+    // rather than assuming the delete took (LIVE-09).
+    if (deleteOutcome === "deleted") {
+      setHasRecordings(false);
+    } else {
+      setHasRecordings(await hasStoredRecordings());
+    }
     setContext(EMPTY_CONTEXT);
     setApiKey("");
     setProviderInfo(null);
     setVerifyError("");
-    setHasRecordings(false);
   };
 
   return (

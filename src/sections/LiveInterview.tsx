@@ -146,6 +146,10 @@ export const LiveInterview: React.FC = () => {
       ? UNSUPPORTED_FORMAT_REASON
       : null;
 
+  // Closed and nulled on Stop and on unmount (CR-01): an open connection
+  // makes indexedDB.deleteDatabase() queue on "blocked" instead of running,
+  // so a live handle here silently defeats the "Clear stored data" promise
+  // (D-12) even after the visitor believes the recording is over.
   const dbRef = useRef<IDBDatabase | null>(null);
   const recorderHandleRef = useRef<RecorderPairHandle | null>(null);
   const liveStreamsRef = useRef<{ mic: MediaStream | null; tab: MediaStream | null }>({
@@ -232,6 +236,8 @@ export const LiveInterview: React.FC = () => {
         reshareTabRecorderRef.current.stop();
       }
       releaseWakeLock();
+      dbRef.current?.close();
+      dbRef.current = null;
     };
   }, []);
 
@@ -757,6 +763,13 @@ export const LiveInterview: React.FC = () => {
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not stop recording cleanly.");
+    } finally {
+      // The handle assigned in handleBegin must not outlive the recording
+      // (CR-01) — closed here regardless of whether the storage write above
+      // succeeded, so a stopped session never keeps deleteRecordingDB()
+      // queued on "blocked".
+      dbRef.current?.close();
+      dbRef.current = null;
     }
   };
 
