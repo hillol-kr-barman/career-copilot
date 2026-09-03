@@ -1,4 +1,10 @@
-import type { AudioChunkMeta, AudioChunkRecord, RecordingSession, StreamRole } from "../types";
+import type {
+  AudioChunkMeta,
+  AudioChunkRecord,
+  RecordingSession,
+  StreamRole,
+  UserRole,
+} from "../types";
 
 /**
  * Every chunk is written as its own IndexedDB record rather than appended
@@ -194,5 +200,180 @@ export const hasStoredRecordings = async (): Promise<boolean> => {
     return count > 0;
   } catch {
     return false;
+  }
+};
+
+/**
+ * The recovered session together with enough summary data for the recovery
+ * prompt to say how much was captured, without reading every chunk's blob.
+ */
+export interface ResumableSessionInfo {
+  session: RecordingSession;
+  chunkCounts: Partial<Record<StreamRole, number>>;
+  latestTsMs: number;
+}
+
+/**
+ * Session records read back from storage are input, not trusted internal
+ * state (T-04-04) — a record whose `sessionId`, `clockOrigin`, `mimeType` or
+ * `userRole` is missing or of the wrong type is unusable and skipped. A
+ * `userRole` that is present but not one of the two known values is
+ * normalised to `"candidate"` rather than treated as invalid, since the
+ * field itself is present and trustworthy enough to keep the record.
+ */
+const normaliseSessionRecord = (value: unknown): RecordingSession | null => {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.sessionId !== "string" || record.sessionId.length === 0) return null;
+  if (typeof record.clockOrigin !== "number") return null;
+  if (typeof record.mimeType !== "string" || record.mimeType.length === 0) return null;
+  if (typeof record.userRole !== "string") return null;
+
+  const userRole: UserRole = record.userRole === "interviewer" ? "interviewer" : "candidate";
+  const startedAt = typeof record.startedAt === "number" ? record.startedAt : 0;
+  const status = record.status === "stopped" ? "stopped" : "recording";
+  const durationMs = typeof record.durationMs === "number" ? record.durationMs : 0;
+
+  return {
+    sessionId: record.sessionId,
+    startedAt,
+    clockOrigin: record.clockOrigin,
+    userRole,
+    mimeType: record.mimeType,
+    status,
+    durationMs,
+  };
+};
+
+/**
+ * The newest session still marked `"recording"` — left over from a crash or
+ * a reload, since a clean stop always sets status to `"stopped"` first.
+ * Returns null when there is nothing to recover. Resolves — never rejects —
+ * on any failure: a private-browsing IndexedDB block, a corrupted record, or
+ * a schema mismatch all mean "nothing to recover", which is a safe and
+ * honest answer (mirrors `loadContext`'s degrade-to-safe-default discipline
+ * in `src/App.tsx`).
+ */
+export const findResumableSession = async (): Promise<ResumableSessionInfo | null> => {
+  try {
+    const db = await openRecordingDB();
+
+    const rawSessions = await new Promise<unknown[]>((resolve, reject) => {
+      const tx = db.transaction(SESSIONS_STORE, "readonly");
+      const req = tx.objectStore(SESSIONS_STORE).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+
+    const resumable = rawSessions
+      .map(normaliseSessionRecord)
+      .filter((s): s is RecordingSession => s !== null && s.status === "recording")
+      .sort((a, b) => b.startedAt - a.startedAt);
+
+    const newest = resumable[0];
+    if (!newest) {
+      db.close();
+      return null;
+    }
+
+    const chunkCounts: Partial<Record<StreamRole, number>> = {};
+    let latestTsMs = 0;
+
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(CHUNKS_STORE, "readonly");
+      const index = tx.objectStore(CHUNKS_STORE).index(BY_SESSION_INDEX);
+      const req = index.openCursor(IDBKeyRange.only(newest.sessionId));
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) {
+          resolve();
+          return;
+        }
+        const chunk = cursor.value as AudioChunkRecord;
+        chunkCounts[chunk.streamRole] = (chunkCounts[chunk.streamRole] ?? 0) + 1;
+        if (chunk.tsMs > latestTsMs) latestTsMs = chunk.tsMs;
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+
+    db.close();
+    return { session: newest, chunkCounts, latestTsMs };
+  } catch {
+    return null;
+  }
+};
+
+/** Deletes one session record and all of its chunks, using the `bySession` index. */
+const deleteSessionAndChunks = (db: IDBDatabase, sessionId: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const tx = db.transaction([SESSIONS_STORE, CHUNKS_STORE], "readwrite");
+    tx.objectStore(SESSIONS_STORE).delete(sessionId);
+    const index = tx.objectStore(CHUNKS_STORE).index(BY_SESSION_INDEX);
+    const cursorReq = index.openCursor(IDBKeyRange.only(sessionId));
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+/**
+ * Deletes every unfinished session except `keepSessionId`, together with all
+ * of its chunks (via the `bySession` index). Storage can hold several
+ * unfinished sessions — crash twice and there are two — and an interview
+ * abandoned two sessions ago is almost certainly dead, so only the newest is
+ * ever offered and the rest are removed in the same operation. Resolves —
+ * never rejects — on any failure; a storage fault here just leaves a stale
+ * session behind rather than blocking the recovery flow.
+ */
+export const pruneOlderSessions = async (keepSessionId: string): Promise<void> => {
+  try {
+    const db = await openRecordingDB();
+    const allIds = await new Promise<IDBValidKey[]>((resolve, reject) => {
+      const tx = db.transaction(SESSIONS_STORE, "readonly");
+      const req = tx.objectStore(SESSIONS_STORE).getAllKeys();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+
+    for (const id of allIds) {
+      if (id === keepSessionId) continue;
+      await deleteSessionAndChunks(db, String(id));
+    }
+    db.close();
+  } catch {
+    // best-effort cleanup — see doc comment above
+  }
+};
+
+/** Deletes one session record and all of its chunks by id. Resolves — never rejects. */
+export const deleteSession = async (sessionId: string): Promise<void> => {
+  try {
+    const db = await openRecordingDB();
+    await deleteSessionAndChunks(db, sessionId);
+    db.close();
+  } catch {
+    // resolve regardless — a deletion failure degrades to "still there", not a crash
+  }
+};
+
+/**
+ * One past the highest `seq` already stored for a session/stream-role pair,
+ * so a resumed session continues numbering rather than overwriting existing
+ * chunks at the same key. Degrades to 0 on any failure.
+ */
+export const nextSeqFor = async (sessionId: string, streamRole: StreamRole): Promise<number> => {
+  try {
+    const db = await openRecordingDB();
+    const chunks = await listChunks(db, sessionId, streamRole);
+    db.close();
+    if (chunks.length === 0) return 0;
+    return chunks[chunks.length - 1].seq + 1;
+  } catch {
+    return 0;
   }
 };
