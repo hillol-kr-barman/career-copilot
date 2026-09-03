@@ -142,3 +142,57 @@ export async function assembleBlob(
     { type: mimeType }
   );
 }
+
+/**
+ * Deletes the whole `live_interview_recordings` database by name (D-12) — the
+ * same discipline `handleClearStoredData` already follows for its enumerated
+ * localStorage keys: name every store explicitly, never call a blanket clear,
+ * because on a shared origin a wholesale storage clear would take another
+ * application's data with it.
+ *
+ * Resolves — never rejects — in every case, so the "Clear stored data"
+ * button can never be left mid-clear by a storage fault:
+ * - Success: the database is gone.
+ * - `blocked` (another tab still has a connection open): the deletion is
+ *   queued and completes once that tab releases it; hanging this button on
+ *   another tab's lifetime would be worse than proceeding.
+ * - `error`: logged via `console.error` so the failure is visible in
+ *   DevTools without surfacing it to the visitor.
+ */
+export function deleteRecordingDB(): Promise<void> {
+  return new Promise((resolve) => {
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = () => resolve();
+    req.onblocked = () => resolve();
+    req.onerror = () => {
+      console.error("Failed to delete the recordings database.", req.error);
+      resolve();
+    };
+  });
+}
+
+/**
+ * Whether the `chunks` store holds at least one record. Uses a count on the
+ * store rather than reading records — the caller only needs a boolean and
+ * the blobs are large.
+ *
+ * Degrades to `false` on any failure (mirrors `loadContext`'s
+ * try/catch-to-safe-default discipline in `src/App.tsx`) — a private
+ * browsing mode that blocks IndexedDB reports "nothing stored", which is
+ * true.
+ */
+export const hasStoredRecordings = async (): Promise<boolean> => {
+  try {
+    const db = await openRecordingDB();
+    const count = await new Promise<number>((resolve, reject) => {
+      const tx = db.transaction(CHUNKS_STORE, "readonly");
+      const req = tx.objectStore(CHUNKS_STORE).count();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return count > 0;
+  } catch {
+    return false;
+  }
+};
