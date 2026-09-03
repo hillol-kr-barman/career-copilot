@@ -267,22 +267,28 @@ export const assembleStreamBlob = async (
  * application's data with it.
  *
  * Resolves — never rejects — in every case, so the "Clear stored data"
- * button can never be left mid-clear by a storage fault:
- * - Success: the database is gone.
- * - `blocked` (another tab still has a connection open): the deletion is
- *   queued and completes once that tab releases it; hanging this button on
- *   another tab's lifetime would be worse than proceeding.
- * - `error`: logged via `console.error` so the failure is visible in
+ * button can never be left mid-clear by a storage fault. The resolved
+ * `DeleteRecordingDBOutcome` tells the caller what actually happened; this
+ * function does not decide what the visitor is told, the caller does:
+ * - `"deleted"`: the database is actually gone.
+ * - `"blocked"`: another connection (this tab or another) is still open, so
+ *   the deletion is queued behind it and has NOT happened yet — the request
+ *   never reaches `onsuccess` until that connection closes. Reporting this as
+ *   a success would tell the visitor their data is gone when it is still on
+ *   disk.
+ * - `"error"`: logged via `console.error` so the failure is visible in
  *   DevTools without surfacing it to the visitor.
  */
-export function deleteRecordingDB(): Promise<void> {
+export type DeleteRecordingDBOutcome = "deleted" | "blocked" | "error";
+
+export function deleteRecordingDB(): Promise<DeleteRecordingDBOutcome> {
   return new Promise((resolve) => {
     const req = indexedDB.deleteDatabase(DB_NAME);
-    req.onsuccess = () => resolve();
-    req.onblocked = () => resolve();
+    req.onsuccess = () => resolve("deleted");
+    req.onblocked = () => resolve("blocked");
     req.onerror = () => {
       console.error("Failed to delete the recordings database.", req.error);
-      resolve();
+      resolve("error");
     };
   });
 }
