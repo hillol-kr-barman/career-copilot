@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { RefreshCw, AlertTriangle, Circle, Square, Download, Headphones } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
 import { ConsentGate } from "../components/ConsentGate";
+import { RoleToggle } from "../components/RoleToggle";
 import {
   acquireMic,
   acquireTabAudio,
@@ -40,10 +41,6 @@ const readStoredConsent = (): boolean => {
   }
 };
 
-// D-07's default: the visitor is the candidate until plan 04-02's role
-// toggle replaces this constant with the toggle's live value.
-const DEFAULT_USER_ROLE: UserRole = "candidate";
-
 const formatElapsed = (ms: number): string => {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -68,6 +65,7 @@ export const LiveInterview: React.FC = () => {
   const [acknowledgedSilentTab, setAcknowledgedSilentTab] = useState(false);
   const [formatUnsupported, setFormatUnsupported] = useState(false);
   const [hasConsented, setHasConsented] = useState(readStoredConsent);
+  const [role, setRole] = useState<UserRole>("candidate");
 
   // UA-family capability gate (D-01, D-05) — computed once, it does not
   // change over the component's lifetime.
@@ -213,7 +211,7 @@ export const LiveInterview: React.FC = () => {
     try {
       const db = await openRecordingDB();
       const sessionId = crypto.randomUUID();
-      const roleMap = resolveStreamRoles(DEFAULT_USER_ROLE);
+      const roleMap = resolveStreamRoles(role);
 
       const handle = startRecorderPair(
         micStream,
@@ -233,7 +231,7 @@ export const LiveInterview: React.FC = () => {
         sessionId,
         startedAt: Date.now(),
         clockOrigin: handle.clockOrigin,
-        userRole: DEFAULT_USER_ROLE,
+        userRole: role,
         mimeType,
       });
 
@@ -298,6 +296,12 @@ export const LiveInterview: React.FC = () => {
                 <span>{error}</span>
               </div>
             )}
+
+            <RoleToggle
+              role={role}
+              onRoleChange={setRole}
+              disabled={status !== "idle" && status !== "armed"}
+            />
 
             <div className="flex items-start gap-2.5 bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-4">
               <div className="p-1.5 rounded-[6px] shrink-0 border bg-amber-500/10 border-amber-500/20 text-amber-400">
