@@ -709,9 +709,33 @@ export const LiveInterview: React.FC = () => {
     setStatus("recording");
   };
 
+  /**
+   * Releases everything handleStop must release regardless of whether the
+   * storage write it guards succeeds: both MediaStreams, the wake lock, and
+   * the IndexedDB handle (CR-01, CR-02, D-12). Reads from liveStreamsRef
+   * rather than the micStream/tabStream closure variables deliberately — the
+   * ref always holds the current pair. Every operation here is idempotent —
+   * stopStream on an already-stopped track is a no-op, releaseWakeLock is
+   * documented safe to call repeatedly — so calling this twice is harmless.
+   */
+  const teardownCapture = () => {
+    stopStream(liveStreamsRef.current.mic);
+    stopStream(liveStreamsRef.current.tab);
+    releaseWakeLock();
+    dbRef.current?.close();
+    dbRef.current = null;
+    // Clearing the stream refs (not just stopping their tracks) is what
+    // triggers the level-meter effect's cleanup — otherwise the meters'
+    // AudioContexts and RecordingControls' rAF loop would stay open after
+    // a session has stopped.
+    setMicStream(null);
+    setTabStream(null);
+  };
+
   const handleStop = async () => {
     if (!recorderHandleRef.current || !session || !dbRef.current) return;
     setError("");
+    const db = dbRef.current;
     try {
       // If a revoke-and-reshare happened this session, the ad-hoc tab
       // recorder it created is separate from the pair recorderHandleRef
@@ -731,21 +755,20 @@ export const LiveInterview: React.FC = () => {
       reshareTabRecorderRef.current = null;
 
       const finalDuration = performance.now() - session.clockOrigin - pausedMsRef.current;
-      await markSessionStopped(dbRef.current, session.sessionId, finalDuration);
-      stopStream(micStream);
-      stopStream(tabStream);
-      releaseWakeLock();
-      // Clearing the stream refs (not just stopping their tracks) is what
-      // triggers the level-meter effect's cleanup — otherwise the meters'
-      // AudioContexts and RecordingControls' rAF loop would stay open after
-      // a session has stopped.
-      setMicStream(null);
-      setTabStream(null);
+
+      // Hardware and status transition unconditionally, before the awaited
+      // storage write below — a rejected markSessionStopped (quota
+      // pressure, a blocked transaction, mid-session eviction) must never
+      // leave the microphone, tab share, or wake lock held, or the browser's
+      // recording indicator lit after the visitor believes they stopped
+      // (CR-02).
       setWakeLockUnavailable(false);
       setTabSilent(false);
       setShareRevoked(false);
       setElapsedMs(finalDuration);
       setStatus("stopped");
+
+      await markSessionStopped(db, session.sessionId, finalDuration);
 
       // Derive both stream summaries now that the session has stopped
       // (LIVE-08) — this is what populates the download surface, and is
@@ -762,14 +785,13 @@ export const LiveInterview: React.FC = () => {
         interviewerResult.summary.chunkCount > 0 && !tabEverAudibleRef.current
       );
     } catch (err) {
+      // Hardware and status are already released by this point (the
+      // transition above runs before the awaited write, and teardownCapture
+      // runs in finally below regardless) — this reports a storage failure
+      // and nothing more.
       setError(err instanceof Error ? err.message : "Could not stop recording cleanly.");
     } finally {
-      // The handle assigned in handleBegin must not outlive the recording
-      // (CR-01) — closed here regardless of whether the storage write above
-      // succeeded, so a stopped session never keeps deleteRecordingDB()
-      // queued on "blocked".
-      dbRef.current?.close();
-      dbRef.current = null;
+      teardownCapture();
     }
   };
 
