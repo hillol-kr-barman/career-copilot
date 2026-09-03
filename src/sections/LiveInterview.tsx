@@ -14,6 +14,8 @@ import {
 } from "../lib/audioCapture";
 import { pickSupportedMimeType, resolveStreamRoles, startRecorderPair } from "../lib/recorderPair";
 import type { RecorderPairHandle } from "../lib/recorderPair";
+import { createLevelMeter } from "../lib/levelMeter";
+import type { LevelMeterHandle } from "../lib/levelMeter";
 import {
   openRecordingDB,
   createSession,
@@ -88,6 +90,19 @@ export const LiveInterview: React.FC = () => {
   const cancelledRef = useRef(false);
   const connectButtonRef = useRef<HTMLButtonElement | null>(null);
 
+  // Level meters are observability only (T-04-13) — created once both streams
+  // exist, read from a rAF loop in RecordingControls, and never on the
+  // critical path of the recording itself.
+  const micMeterRef = useRef<LevelMeterHandle | null>(null);
+  const tabMeterRef = useRef<LevelMeterHandle | null>(null);
+
+  // D-03: elapsedMs is derived from clockOrigin, the same performance.now()
+  // origin the recorder pair timestamps every chunk against — never from
+  // summed timeslice intervals. pausedMsRef accumulates total time spent
+  // paused so the timer can freeze and resume without drifting.
+  const pausedMsRef = useRef(0);
+  const pauseStartRef = useRef<number | null>(null);
+
   liveStreamsRef.current = { mic: micStream, tab: tabStream };
 
   // Consent resolving unmounts the gate's own "Continue" button — focus
@@ -112,14 +127,47 @@ export const LiveInterview: React.FC = () => {
   }, []);
 
   // A wall-clock timer independent of chunk delivery — dataavailable/
-  // timeslice timing is not exact enough to double as an elapsed clock.
+  // timeslice timing is not exact enough to double as an elapsed clock
+  // (Common Pitfall 3). Only running while status === "recording" is what
+  // makes the timer freeze on pause; pausedMsRef.current is subtracted so
+  // resuming continues from where it froze rather than losing the gap.
   useEffect(() => {
     if (status !== "recording" || !session) return;
     const id = window.setInterval(() => {
-      setElapsedMs(performance.now() - session.clockOrigin);
+      setElapsedMs(performance.now() - session.clockOrigin - pausedMsRef.current);
     }, 1000);
     return () => window.clearInterval(id);
   }, [status, session]);
+
+  // Two level meters, created once both streams exist (armed state onward,
+  // before any MediaRecorder starts) and torn down in cleanup. A
+  // cancellation flag guards a StrictMode double-mount, matching Pattern 8 —
+  // even though createLevelMeter is synchronous today, the guard costs
+  // nothing and keeps this effect safe if that ever changes.
+  useEffect(() => {
+    if (!micStream || !tabStream) return;
+    let cancelled = false;
+
+    const micMeter = createLevelMeter(micStream);
+    const tabMeter = createLevelMeter(tabStream);
+
+    if (cancelled) {
+      micMeter?.close();
+      tabMeter?.close();
+      return;
+    }
+
+    micMeterRef.current = micMeter;
+    tabMeterRef.current = tabMeter;
+
+    return () => {
+      cancelled = true;
+      micMeterRef.current?.close();
+      tabMeterRef.current?.close();
+      micMeterRef.current = null;
+      tabMeterRef.current = null;
+    };
+  }, [micStream, tabStream]);
 
   const handleAcceptConsent = () => {
     try {
@@ -237,6 +285,8 @@ export const LiveInterview: React.FC = () => {
 
       dbRef.current = db;
       recorderHandleRef.current = handle;
+      pausedMsRef.current = 0;
+      pauseStartRef.current = null;
       setSession(newSession);
       setElapsedMs(0);
       setStatus("recording");
@@ -245,12 +295,29 @@ export const LiveInterview: React.FC = () => {
     }
   };
 
+  const handlePause = () => {
+    if (!recorderHandleRef.current || status !== "recording") return;
+    recorderHandleRef.current.pause();
+    pauseStartRef.current = performance.now();
+    setStatus("paused");
+  };
+
+  const handleResume = () => {
+    if (!recorderHandleRef.current || status !== "paused") return;
+    if (pauseStartRef.current !== null) {
+      pausedMsRef.current += performance.now() - pauseStartRef.current;
+      pauseStartRef.current = null;
+    }
+    recorderHandleRef.current.resume();
+    setStatus("recording");
+  };
+
   const handleStop = async () => {
     if (!recorderHandleRef.current || !session || !dbRef.current) return;
     setError("");
     try {
       await recorderHandleRef.current.stopAll();
-      const finalDuration = performance.now() - session.clockOrigin;
+      const finalDuration = performance.now() - session.clockOrigin - pausedMsRef.current;
       await markSessionStopped(dbRef.current, session.sessionId, finalDuration);
       stopStream(micStream);
       stopStream(tabStream);
