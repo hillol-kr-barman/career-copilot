@@ -5,7 +5,8 @@ interface StoredDataNoticeProps {
   hasResume: boolean;
   hasJobDescription: boolean;
   hasApiKey: boolean;
-  onClear: () => void;
+  hasRecordings: boolean;
+  onClear: () => void | Promise<void>;
 }
 
 /**
@@ -21,6 +22,7 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
   hasResume,
   hasJobDescription,
   hasApiKey,
+  hasRecordings,
   onClear,
 }) => {
   const [isConfirming, setIsConfirming] = useState(false);
@@ -30,6 +32,7 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
     hasResume && "your resume",
     hasJobDescription && "the job description",
     hasApiKey && "your API key",
+    hasRecordings && "your recordings",
   ].filter(Boolean) as string[];
 
   const summary =
@@ -39,8 +42,8 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
         ? stored[0]
         : `${stored.slice(0, -1).join(", ")} and ${stored[stored.length - 1]}`;
 
-  const handleClear = () => {
-    onClear();
+  const handleClear = async () => {
+    await onClear();
     setIsConfirming(false);
     setJustCleared(true);
     window.setTimeout(() => setJustCleared(false), 4000);

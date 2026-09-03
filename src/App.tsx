@@ -7,6 +7,7 @@ import { AiDetection } from "./sections/AiDetection";
 import { ResumeAudit } from "./sections/ResumeAudit";
 import { InterviewPrep } from "./sections/InterviewPrep";
 import { LiveInterview } from "./sections/LiveInterview";
+import { deleteRecordingDB, hasStoredRecordings } from "./lib/recordingStore";
 import { ProviderInfo, SharedContext } from "./types";
 
 const CONTEXT_STORAGE_KEY = "cc_shared_context";
@@ -40,11 +41,18 @@ export default function App() {
   const [providerInfo, setProviderInfo] = useState<ProviderInfo | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState("");
+  const [hasRecordings, setHasRecordings] = useState(false);
 
   // Keep the session on disk so a refresh doesn't cost the user their resume.
   useEffect(() => {
     localStorage.setItem(CONTEXT_STORAGE_KEY, JSON.stringify(context));
   }, [context]);
+
+  // Probe once on mount so the stored-data notice can name recordings
+  // alongside the resume, job description and API key (D-12).
+  useEffect(() => {
+    hasStoredRecordings().then(setHasRecordings);
+  }, []);
 
   /**
    * Identify the engine and model behind the current key.
@@ -112,8 +120,11 @@ export default function App() {
    * leaving it would resurrect the key on the next load and make the button
    * look broken; `selected_gemini_model` is dead residue that nothing reads,
    * and clearing "everything" ought to mean it.
+   *
+   * The `live_interview_recordings` IndexedDB database is named for the same
+   * reason (D-12): explicit deletion by name, never a bulk clear.
    */
-  const handleClearStoredData = () => {
+  const handleClearStoredData = async () => {
     for (const key of [
       CONTEXT_STORAGE_KEY,
       API_KEY_STORAGE_KEY,
@@ -122,10 +133,12 @@ export default function App() {
     ]) {
       localStorage.removeItem(key);
     }
+    await deleteRecordingDB();
     setContext(EMPTY_CONTEXT);
     setApiKey("");
     setProviderInfo(null);
     setVerifyError("");
+    setHasRecordings(false);
   };
 
   return (
@@ -224,6 +237,7 @@ export default function App() {
           hasResume={Boolean(context.resumeText.trim())}
           hasJobDescription={Boolean(context.jobDescription.trim())}
           hasApiKey={Boolean(apiKey.trim())}
+          hasRecordings={hasRecordings}
           onClear={handleClearStoredData}
         />
       </main>
