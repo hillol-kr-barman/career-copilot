@@ -8,6 +8,7 @@ import {
   XCircle,
   AlertTriangle,
   Loader2,
+  MonitorOff,
   X,
 } from "lucide-react";
 import type { CaptureStatus, StreamRole } from "../types";
@@ -81,6 +82,10 @@ export interface RecordingControlsProps {
   connectButtonRef?: React.RefObject<HTMLButtonElement | null>;
   /** Soft, non-blocking notices — wake-lock-unavailable and the silence watchdog. */
   warnings: RecordingWarning[];
+  /** True once the tab track's native `ended` event has fired mid-recording (LIVE-07, D-15). */
+  shareRevoked: boolean;
+  /** Re-invokes the tab share from the revoked-share banner. */
+  onReshareTab: () => void;
 }
 
 /**
@@ -111,6 +116,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   onAcknowledgeSilentTab,
   connectButtonRef,
   warnings,
+  shareRevoked,
+  onReshareTab,
 }) => {
   const [micLevel, setMicLevel] = useState<number | null>(null);
   const [tabLevel, setTabLevel] = useState<number | null>(null);
@@ -143,27 +150,31 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const micHasMeter = micMeterRef.current !== null;
   const tabHasMeter = tabMeterRef.current !== null;
 
+  // A track's own readyState always wins over the meter — a stream can end
+  // (revoked share, device unplugged) after its AnalyserNode was already
+  // created, and a meter reading a dead track's silence would otherwise
+  // stay "healthy" forever instead of ever surfacing the ended state.
   // Backstop: if createLevelMeter returned null for a stream (T-04-13), the
   // bar is dropped and the chip falls back to the track's live/ended state
   // instead of RMS — a metering failure never blocks or misrepresents the
   // recording.
-  const micChipState: ChipState = !micHasMeter
-    ? micTrackLive
+  const micChipState: ChipState = !micTrackLive
+    ? "missing"
+    : !micHasMeter
       ? "healthy"
-      : "missing"
-    : micLevel === null
-      ? "waiting"
-      : "healthy";
+      : micLevel === null
+        ? "waiting"
+        : "healthy";
 
   const tabChipState: ChipState = tabAudioMissing
     ? "missing"
-    : !tabHasMeter
-      ? tabTrackLive
+    : !tabTrackLive
+      ? "missing"
+      : !tabHasMeter
         ? "healthy"
-        : "missing"
-      : tabLevel === null
-        ? "waiting"
-        : "healthy";
+        : tabLevel === null
+          ? "waiting"
+          : "healthy";
 
   // Only discrete health-state transitions are announced — never the
   // continuous level, which would be unusable noise announced every frame.
@@ -257,6 +268,36 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             level={micLevel}
             hasMeter={micHasMeter}
           />
+
+          {/* Sits directly above the interviewer meter row (LIVE-07) — the
+              one genuinely urgent unprompted interruption in this phase, so
+              it announces assertively and never auto-dismisses. The
+              candidate row above is unaffected and keeps updating, making
+              clear that only the interviewer stream stopped. */}
+          {shareRevoked && (
+            <div
+              aria-live="assertive"
+              className="flex items-start gap-2.5 bg-[#1c2128] border border-amber-500/20 rounded-[8px] p-4"
+            >
+              <div className="p-1.5 rounded-[6px] shrink-0 border bg-amber-500/10 border-amber-500/20 text-amber-400">
+                <MonitorOff className="w-4 h-4" />
+              </div>
+              <div className="flex flex-col gap-3 flex-1">
+                <p className="text-xs text-[#9aa3b0] leading-relaxed">
+                  Screen sharing was stopped — the interviewer's audio has stopped recording. Your
+                  microphone is still recording.
+                </p>
+                <button
+                  type="button"
+                  onClick={onReshareTab}
+                  className="self-start px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
+                >
+                  Share tab audio again
+                </button>
+              </div>
+            </div>
+          )}
+
           <MeterRow
             roleLabel={tabRole}
             source="TAB AUDIO"

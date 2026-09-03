@@ -14,7 +14,12 @@ import {
   TAB_AUDIO_UNSUPPORTED_REASON,
   UNSUPPORTED_FORMAT_REASON,
 } from "../lib/audioCapture";
-import { pickSupportedMimeType, resolveStreamRoles, startRecorderPair } from "../lib/recorderPair";
+import {
+  pickSupportedMimeType,
+  resolveStreamRoles,
+  startRecorderPair,
+  TIMESLICE_MS,
+} from "../lib/recorderPair";
 import type { RecorderPairHandle } from "../lib/recorderPair";
 import { createLevelMeter, NEAR_SILENCE_RMS, SILENCE_GRACE_MS, SILENCE_WATCHDOG_MS } from "../lib/levelMeter";
 import type { LevelMeterHandle } from "../lib/levelMeter";
@@ -32,7 +37,7 @@ import {
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob } from "../lib/download";
-import type { CaptureStatus, RecordingSession, StreamRole, UserRole } from "../types";
+import type { AudioChunkMeta, CaptureStatus, RecordingSession, StreamRole, UserRole } from "../types";
 import type { RecordingWarning } from "../components/RecordingControls";
 
 /** Copy from the UI-SPEC Copywriting Contract — a recovered session whose
@@ -100,6 +105,12 @@ export const LiveInterview: React.FC = () => {
   // recording itself.
   const [tabSilent, setTabSilent] = useState(false);
 
+  // LIVE-07, D-15: set by the tab track's native `ended` event while a
+  // recording is active. A single boolean slot — never an array — so a
+  // revoke, re-share, revoke cycle replaces the banner rather than stacking
+  // a second one. Never stops the microphone recorder or the session.
+  const [shareRevoked, setShareRevoked] = useState(false);
+
   // UA-family capability gate (D-01, D-05) — computed once, it does not
   // change over the component's lifetime.
   const [tabAudioSupported] = useState(() => isTabAudioLikelySupported());
@@ -133,6 +144,13 @@ export const LiveInterview: React.FC = () => {
     seedSeq: Partial<Record<StreamRole, number>>;
     tsOffsetMs: number;
   } | null>(null);
+
+  // The ad-hoc MediaRecorder created by handleReshareTabAfterRevoke, when a
+  // revoked tab share is re-shared mid-recording — distinct from the tab
+  // recorder inside recorderHandleRef (created once, by startRecorderPair,
+  // for the original tab stream). Null whenever no re-share has happened
+  // yet this session.
+  const reshareTabRecorderRef = useRef<MediaRecorder | null>(null);
 
   // Level meters are observability only (T-04-13) — created once both streams
   // exist, read from a rAF loop in RecordingControls, and never on the
@@ -178,9 +196,26 @@ export const LiveInterview: React.FC = () => {
       stopStream(liveStreamsRef.current.mic);
       stopStream(liveStreamsRef.current.tab);
       recorderHandleRef.current?.stopAll().catch(() => {});
+      if (reshareTabRecorderRef.current && reshareTabRecorderRef.current.state !== "inactive") {
+        reshareTabRecorderRef.current.stop();
+      }
       releaseWakeLock();
     };
   }, []);
+
+  // D-16: warns the visitor before an accidental reload or tab close costs
+  // them an in-progress interview. Installed only while status is
+  // "recording" or "paused" — an idle tool must never block a reload.
+  // e.returnValue = "" is what Chrome requires to show its native dialog.
+  useEffect(() => {
+    if (status !== "recording" && status !== "paused") return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [status]);
 
   // Crash-recovery scan: runs once on mount, before any gate renders,
   // including the consent gate. When a session is found, every older
@@ -351,6 +386,97 @@ export const LiveInterview: React.FC = () => {
     }
   };
 
+  /**
+   * Stops whichever `MediaRecorder` is currently producing the interviewer
+   * stream's chunks — the original one created inside `startRecorderPair`,
+   * or the ad-hoc one created by `handleReshareTabAfterRevoke` after a
+   * re-share — so a revoke always stops the right recorder no matter how
+   * many times the tab has been re-shared this session.
+   */
+  const stopActiveTabRecorder = () => {
+    if (reshareTabRecorderRef.current && reshareTabRecorderRef.current.state !== "inactive") {
+      reshareTabRecorderRef.current.stop();
+    } else {
+      recorderHandleRef.current?.stopTab();
+    }
+  };
+
+  /**
+   * Attaches the native `ended` event to every track of a tab stream — the
+   * only reliable signal that the visitor clicked Chrome's stop-sharing bar
+   * or the browser revoked the source (Pattern 6, RESEARCH.md): a manual
+   * `track.stop()` call never dispatches it, so it can't be confused with
+   * this app's own teardown. Guarded so a revoke arriving outside an active
+   * recording — e.g. after the visitor already pressed Stop — never raises
+   * the banner (D-15).
+   */
+  const attachTabEndedListener = (stream: MediaStream) => {
+    const handleEnded = () => {
+      if (statusRef.current !== "recording" && statusRef.current !== "paused") return;
+      stopActiveTabRecorder();
+      setShareRevoked(true);
+    };
+    stream.getTracks().forEach((track) => {
+      track.addEventListener("ended", handleEnded, { once: true });
+    });
+  };
+
+  /**
+   * "Share tab audio again" on the revoked-share banner: re-invokes
+   * `getDisplayMedia`, and — since a recording is always active whenever
+   * this banner can be showing — starts a fresh tab-audio `MediaRecorder`
+   * appending into the same session, with sequence numbers continuing from
+   * `nextSeqFor` rather than restarting at zero. Re-attaches the `ended`
+   * listener to the new tracks so a second revoke still raises the banner.
+   */
+  const handleReshareTabAfterRevoke = async () => {
+    setError("");
+    try {
+      const tabResult = await acquireTabAudio();
+
+      if (cancelledRef.current) {
+        stopStream(tabResult.stream);
+        return;
+      }
+
+      attachTabEndedListener(tabResult.stream);
+      stopStream(tabStream);
+      setTabStream(tabResult.stream);
+      setTabAudioMissing(!tabResult.hasAudio);
+      setShareRevoked(false);
+
+      const db = dbRef.current;
+      if (db && session && (statusRef.current === "recording" || statusRef.current === "paused")) {
+        const roleMap = resolveStreamRoles(role);
+        const tabRole = roleMap.tab;
+        let seq = await nextSeqFor(session.sessionId, tabRole);
+
+        const recorder = new MediaRecorder(tabResult.stream, { mimeType: session.mimeType });
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            const meta: AudioChunkMeta = {
+              sessionId: session.sessionId,
+              streamRole: tabRole,
+              seq: seq++,
+              tsMs: performance.now() - session.clockOrigin - pausedMsRef.current,
+              size: e.data.size,
+              mimeType: session.mimeType,
+            };
+            appendChunk(db, meta, e.data).catch((chunkErr) => {
+              setError(
+                chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk."
+              );
+            });
+          }
+        };
+        recorder.start(TIMESLICE_MS);
+        reshareTabRecorderRef.current = recorder;
+      }
+    } catch (err) {
+      setError(describeCaptureError(err, "display"));
+    }
+  };
+
   const handleAcceptConsent = () => {
     try {
       sessionStorage.setItem(CONSENT_SESSION_KEY, "1");
@@ -388,6 +514,7 @@ export const LiveInterview: React.FC = () => {
         return;
       }
 
+      attachTabEndedListener(tab);
       setMicStream(mic);
       setTabStream(tab);
       setTabAudioMissing(!tabResult.hasAudio);
@@ -416,6 +543,7 @@ export const LiveInterview: React.FC = () => {
         return;
       }
 
+      attachTabEndedListener(tabResult.stream);
       stopStream(tabStream);
       setTabStream(tabResult.stream);
       setTabAudioMissing(!tabResult.hasAudio);
@@ -529,7 +657,23 @@ export const LiveInterview: React.FC = () => {
     if (!recorderHandleRef.current || !session || !dbRef.current) return;
     setError("");
     try {
-      await recorderHandleRef.current.stopAll();
+      // If a revoke-and-reshare happened this session, the ad-hoc tab
+      // recorder it created is separate from the pair recorderHandleRef
+      // manages — both must flush their final chunk before the session is
+      // marked stopped.
+      const reshareTabDone =
+        reshareTabRecorderRef.current && reshareTabRecorderRef.current.state !== "inactive"
+          ? new Promise<void>((resolve) => {
+              reshareTabRecorderRef.current!.addEventListener("stop", () => resolve(), {
+                once: true,
+              });
+              reshareTabRecorderRef.current!.stop();
+            })
+          : Promise.resolve();
+
+      await Promise.all([recorderHandleRef.current.stopAll(), reshareTabDone]);
+      reshareTabRecorderRef.current = null;
+
       const finalDuration = performance.now() - session.clockOrigin - pausedMsRef.current;
       await markSessionStopped(dbRef.current, session.sessionId, finalDuration);
       stopStream(micStream);
@@ -543,6 +687,7 @@ export const LiveInterview: React.FC = () => {
       setTabStream(null);
       setWakeLockUnavailable(false);
       setTabSilent(false);
+      setShareRevoked(false);
       setElapsedMs(finalDuration);
       setStatus("stopped");
     } catch (err) {
@@ -663,6 +808,8 @@ export const LiveInterview: React.FC = () => {
               onAcknowledgeSilentTab={() => setAcknowledgedSilentTab(true)}
               connectButtonRef={connectButtonRef}
               warnings={warnings}
+              shareRevoked={shareRevoked}
+              onReshareTab={handleReshareTabAfterRevoke}
             />
 
             {status === "stopped" && (
