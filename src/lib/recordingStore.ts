@@ -137,20 +137,6 @@ export async function listChunks(
   }
 }
 
-/** Concatenates one stream's stored chunks, in sequence order, into a `Blob`. */
-export async function assembleBlob(
-  db: IDBDatabase,
-  sessionId: string,
-  streamRole: StreamRole,
-  mimeType: string
-): Promise<Blob> {
-  const chunks = await listChunks(db, sessionId, streamRole);
-  return new Blob(
-    chunks.map((c) => c.blob),
-    { type: mimeType }
-  );
-}
-
 /**
  * Aggregates one stream's readable chunk metadata into the shape the
  * download surface needs: the total chunk count found in storage, how many
