@@ -8,9 +8,18 @@ import {
   XCircle,
   AlertTriangle,
   Loader2,
+  X,
 } from "lucide-react";
 import type { CaptureStatus, StreamRole } from "../types";
 import type { LevelMeterHandle } from "../lib/levelMeter";
+
+/** A soft, non-blocking notice — wake-lock-unavailable or the silence watchdog. */
+export interface RecordingWarning {
+  id: string;
+  message: string;
+  /** Present only for dismissible notices (e.g. the wake-lock warning). */
+  onDismiss?: () => void;
+}
 
 const formatElapsed = (ms: number): string => {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -70,6 +79,8 @@ export interface RecordingControlsProps {
   onAcknowledgeSilentTab: () => void;
   /** Receives focus once the consent gate resolves (plan 04-02's focus-management contract). */
   connectButtonRef?: React.RefObject<HTMLButtonElement | null>;
+  /** Soft, non-blocking notices — wake-lock-unavailable and the silence watchdog. */
+  warnings: RecordingWarning[];
 }
 
 /**
@@ -99,6 +110,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   onReshare,
   onAcknowledgeSilentTab,
   connectButtonRef,
+  warnings,
 }) => {
   const [micLevel, setMicLevel] = useState<number | null>(null);
   const [tabLevel, setTabLevel] = useState<number | null>(null);
@@ -182,6 +194,32 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       <span aria-live="polite" className="sr-only">
         {announcement}
       </span>
+
+      {warnings.length > 0 && (
+        <div aria-live="polite" className="flex flex-col gap-2">
+          {warnings.map((warning) => (
+            <div
+              key={warning.id}
+              className="flex items-start gap-2.5 bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-4"
+            >
+              <div className="p-1.5 rounded-[6px] shrink-0 border bg-amber-500/10 border-amber-500/20 text-amber-400">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <p className="text-xs text-[#9aa3b0] leading-relaxed flex-1">{warning.message}</p>
+              {warning.onDismiss && (
+                <button
+                  type="button"
+                  onClick={warning.onDismiss}
+                  aria-label="Dismiss notice"
+                  className="text-[#6b7685] hover:text-[#eef0f3] shrink-0 p-0.5"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {status === "idle" && (
         <div className="flex flex-col gap-2">

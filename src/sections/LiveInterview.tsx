@@ -15,8 +15,9 @@ import {
 } from "../lib/audioCapture";
 import { pickSupportedMimeType, resolveStreamRoles, startRecorderPair } from "../lib/recorderPair";
 import type { RecorderPairHandle } from "../lib/recorderPair";
-import { createLevelMeter } from "../lib/levelMeter";
+import { createLevelMeter, NEAR_SILENCE_RMS, SILENCE_GRACE_MS, SILENCE_WATCHDOG_MS } from "../lib/levelMeter";
 import type { LevelMeterHandle } from "../lib/levelMeter";
+import { acquireWakeLock, releaseWakeLock, installWakeLockReacquire } from "../lib/wakeLock";
 import {
   openRecordingDB,
   createSession,
@@ -26,6 +27,7 @@ import {
 } from "../lib/recordingStore";
 import { downloadBlob } from "../lib/download";
 import type { CaptureStatus, RecordingSession, StreamRole, UserRole } from "../types";
+import type { RecordingWarning } from "../components/RecordingControls";
 
 /**
  * Session-scoped only (D-09) — one checkbox, once per browser session, not
@@ -63,6 +65,16 @@ export const LiveInterview: React.FC = () => {
   const [hasConsented, setHasConsented] = useState(readStoredConsent);
   const [role, setRole] = useState<UserRole>("candidate");
 
+  // D-14: a soft, dismissible notice when the platform refuses the screen
+  // wake lock — the refusal never blocks or interrupts recording.
+  const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
+
+  // Silence watchdog: fifteen continuous seconds of near-silence on the tab
+  // stream, after a five-second grace period, raises this — cleared
+  // automatically once the level rises again. Never pauses or stops the
+  // recording itself.
+  const [tabSilent, setTabSilent] = useState(false);
+
   // UA-family capability gate (D-01, D-05) — computed once, it does not
   // change over the component's lifetime.
   const [tabAudioSupported] = useState(() => isTabAudioLikelySupported());
@@ -97,6 +109,17 @@ export const LiveInterview: React.FC = () => {
   const pausedMsRef = useRef(0);
   const pauseStartRef = useRef<number | null>(null);
 
+  // Read by the wake-lock re-acquire predicate and the silence-watchdog
+  // interval, both of which need the latest status inside a closure that
+  // isn't re-created on every status change.
+  const statusRef = useRef<CaptureStatus>(status);
+  statusRef.current = status;
+
+  // Tracks how long the tab stream has been continuously near-silent, for
+  // the silence watchdog below. Reset whenever the level rises again or a
+  // recording is not actively in progress.
+  const silenceStartRef = useRef<number | null>(null);
+
   liveStreamsRef.current = { mic: micStream, tab: tabStream };
 
   // Consent resolving unmounts the gate's own "Continue" button — focus
@@ -117,6 +140,7 @@ export const LiveInterview: React.FC = () => {
       stopStream(liveStreamsRef.current.mic);
       stopStream(liveStreamsRef.current.tab);
       recorderHandleRef.current?.stopAll().catch(() => {});
+      releaseWakeLock();
     };
   }, []);
 
@@ -162,6 +186,51 @@ export const LiveInterview: React.FC = () => {
       tabMeterRef.current = null;
     };
   }, [micStream, tabStream]);
+
+  // Browsers auto-release the wake lock whenever the tab is hidden (D-14) —
+  // re-request it whenever the tab regains visibility while a recording
+  // (recording or paused) is still active. Installed only for the lifetime
+  // of an active recording and removed the moment it ends.
+  const isActiveRecording = status === "recording" || status === "paused";
+  useEffect(() => {
+    if (!isActiveRecording) return;
+    const remove = installWakeLockReacquire(
+      () => statusRef.current === "recording" || statusRef.current === "paused"
+    );
+    return remove;
+  }, [isActiveRecording]);
+
+  // Silence watchdog: ignores the first SILENCE_GRACE_MS after recording
+  // starts, then raises tabSilent once the tab stream's level has stayed
+  // below NEAR_SILENCE_RMS continuously for SILENCE_WATCHDOG_MS. Clears
+  // itself the moment the level rises again — never touches recording state.
+  useEffect(() => {
+    if (status !== "recording" || !session) {
+      silenceStartRef.current = null;
+      setTabSilent(false);
+      return;
+    }
+
+    const id = window.setInterval(() => {
+      const sinceStart = performance.now() - session.clockOrigin - pausedMsRef.current;
+      if (sinceStart < SILENCE_GRACE_MS) return;
+
+      const level = tabMeterRef.current?.read();
+      if (level === undefined) return; // no meter to watch — never blocks recording
+
+      if (level < NEAR_SILENCE_RMS) {
+        if (silenceStartRef.current === null) silenceStartRef.current = performance.now();
+        if (performance.now() - silenceStartRef.current >= SILENCE_WATCHDOG_MS) {
+          setTabSilent(true);
+        }
+      } else {
+        silenceStartRef.current = null;
+        setTabSilent(false);
+      }
+    }, 500);
+
+    return () => window.clearInterval(id);
+  }, [status, session]);
 
   const handleAcceptConsent = () => {
     try {
@@ -284,6 +353,11 @@ export const LiveInterview: React.FC = () => {
       setSession(newSession);
       setElapsedMs(0);
       setStatus("recording");
+
+      // A wake-lock refusal is a soft warning, never a reason to stop or
+      // fail to start a recording (D-14).
+      const gotLock = await acquireWakeLock();
+      setWakeLockUnavailable(!gotLock);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start recording.");
     }
@@ -315,12 +389,15 @@ export const LiveInterview: React.FC = () => {
       await markSessionStopped(dbRef.current, session.sessionId, finalDuration);
       stopStream(micStream);
       stopStream(tabStream);
+      releaseWakeLock();
       // Clearing the stream refs (not just stopping their tracks) is what
       // triggers the level-meter effect's cleanup — otherwise the meters'
       // AudioContexts and RecordingControls' rAF loop would stay open after
       // a session has stopped.
       setMicStream(null);
       setTabStream(null);
+      setWakeLockUnavailable(false);
+      setTabSilent(false);
       setElapsedMs(finalDuration);
       setStatus("stopped");
     } catch (err) {
@@ -340,6 +417,23 @@ export const LiveInterview: React.FC = () => {
       );
     }
   };
+
+  const warnings: RecordingWarning[] = [];
+  if (wakeLockUnavailable) {
+    warnings.push({
+      id: "wake-lock",
+      message:
+        "Your screen may sleep during a long call — keep this tab active and your device plugged in.",
+      onDismiss: () => setWakeLockUnavailable(false),
+    });
+  }
+  if (tabSilent) {
+    warnings.push({
+      id: "silence-watchdog",
+      message:
+        "The interviewer's tab audio has been silent for over 15 seconds. Check that 'Share audio' is still enabled and that the other person isn't muted.",
+    });
+  }
 
   return (
     <ToolSection
@@ -400,6 +494,7 @@ export const LiveInterview: React.FC = () => {
               onReshare={handleShareAgain}
               onAcknowledgeSilentTab={() => setAcknowledgedSilentTab(true)}
               connectButtonRef={connectButtonRef}
+              warnings={warnings}
             />
 
             {status === "stopped" && (
