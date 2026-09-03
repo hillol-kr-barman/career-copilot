@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import { RefreshCw, AlertTriangle, Circle, Square, Download, Headphones } from "lucide-react";
+import { AlertTriangle, Download, Headphones } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
 import { ConsentGate } from "../components/ConsentGate";
 import { RoleToggle } from "../components/RoleToggle";
+import { RecordingControls } from "../components/RecordingControls";
 import {
   acquireMic,
   acquireTabAudio,
@@ -41,13 +42,6 @@ const readStoredConsent = (): boolean => {
   } catch {
     return false;
   }
-};
-
-const formatElapsed = (ms: number): string => {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 };
 
 /**
@@ -321,6 +315,12 @@ export const LiveInterview: React.FC = () => {
       await markSessionStopped(dbRef.current, session.sessionId, finalDuration);
       stopStream(micStream);
       stopStream(tabStream);
+      // Clearing the stream refs (not just stopping their tracks) is what
+      // triggers the level-meter effect's cleanup — otherwise the meters'
+      // AudioContexts and RecordingControls' rAF loop would stay open after
+      // a session has stopped.
+      setMicStream(null);
+      setTabStream(null);
       setElapsedMs(finalDuration);
       setStatus("stopped");
     } catch (err) {
@@ -381,79 +381,26 @@ export const LiveInterview: React.FC = () => {
               </p>
             </div>
 
-            {status === "idle" && (
-              <button
-                ref={connectButtonRef}
-                onClick={handleConnect}
-                className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-              >
-                <span>Connect microphone &amp; screen</span>
-              </button>
-            )}
-
-            {status === "connecting" && (
-              <button
-                disabled
-                className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] disabled:opacity-50"
-              >
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Connecting to microphone and screen…</span>
-              </button>
-            )}
-
-            {status === "armed" && (
-              <div className="flex flex-col gap-3">
-                {tabAudioMissing && !acknowledgedSilentTab && (
-                  <div className="w-full flex items-start gap-2.5 text-xs text-red-500 bg-red-500/10 border border-red-500/15 rounded-[6px] px-4 py-4">
-                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div className="flex flex-col gap-3 flex-1">
-                      <span>
-                        You shared without ticking 'Share tab audio' — the interviewer's side
-                        won't be recorded. Click 'Share again' and make sure the audio checkbox
-                        is ticked before you confirm.
-                      </span>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={handleShareAgain}
-                          className="px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
-                        >
-                          Share again
-                        </button>
-                        <button
-                          onClick={() => setAcknowledgedSilentTab(true)}
-                          className="px-3 py-1.5 rounded-[5px] border border-[rgba(255,255,255,0.07)] bg-transparent text-[#9aa3b0] hover:text-[#eef0f3] text-xs font-medium transition-all active:scale-95"
-                        >
-                          Record anyway (interviewer audio will be silent)
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <button
-                  onClick={handleBegin}
-                  disabled={tabAudioMissing && !acknowledgedSilentTab}
-                  className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-                >
-                  <Circle className="w-4 h-4" />
-                  <span>Begin recording</span>
-                </button>
-              </div>
-            )}
-
-            {(status === "recording" || status === "paused") && (
-              <div className="flex flex-col items-center gap-3">
-                <span className="text-4xl font-extrabold font-mono text-[#eef0f3] tracking-tight">
-                  {formatElapsed(elapsedMs)}
-                </span>
-                <button
-                  onClick={handleStop}
-                  className="w-full inline-flex items-center justify-center gap-2.5 bg-red-500 hover:opacity-90 text-white font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all"
-                >
-                  <Square className="w-4 h-4" />
-                  <span>Stop recording</span>
-                </button>
-              </div>
-            )}
+            <RecordingControls
+              status={status}
+              micStream={micStream}
+              tabStream={tabStream}
+              micRole={resolveStreamRoles(role).mic}
+              tabRole={resolveStreamRoles(role).tab}
+              elapsedMs={elapsedMs}
+              tabAudioMissing={tabAudioMissing}
+              acknowledgedSilentTab={acknowledgedSilentTab}
+              micMeterRef={micMeterRef}
+              tabMeterRef={tabMeterRef}
+              onConnect={handleConnect}
+              onBegin={handleBegin}
+              onPause={handlePause}
+              onResume={handleResume}
+              onStop={handleStop}
+              onReshare={handleShareAgain}
+              onAcknowledgeSilentTab={() => setAcknowledgedSilentTab(true)}
+              connectButtonRef={connectButtonRef}
+            />
 
             {status === "stopped" && (
               <div className="flex flex-col gap-4 border-t border-[rgba(255,255,255,0.07)] pt-5">
@@ -462,8 +409,8 @@ export const LiveInterview: React.FC = () => {
                     Download your recording
                   </h3>
                   <p className="text-xs text-[#6b7685] mt-1">
-                    Two separate audio files — one per speaker. Recording complete —{" "}
-                    {formatElapsed(elapsedMs)}.
+                    Two separate audio files — one per speaker. Nothing was uploaded; these come
+                    straight from this browser's storage.
                   </p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
