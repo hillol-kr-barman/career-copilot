@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import { RefreshCw, AlertTriangle, Circle, Square, Download, Headphones } from "lucide-react";
+import { AlertTriangle, Download, Headphones } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
 import { ConsentGate } from "../components/ConsentGate";
 import { RoleToggle } from "../components/RoleToggle";
+import { RecordingControls } from "../components/RecordingControls";
 import {
   acquireMic,
   acquireTabAudio,
@@ -14,6 +15,9 @@ import {
 } from "../lib/audioCapture";
 import { pickSupportedMimeType, resolveStreamRoles, startRecorderPair } from "../lib/recorderPair";
 import type { RecorderPairHandle } from "../lib/recorderPair";
+import { createLevelMeter, NEAR_SILENCE_RMS, SILENCE_GRACE_MS, SILENCE_WATCHDOG_MS } from "../lib/levelMeter";
+import type { LevelMeterHandle } from "../lib/levelMeter";
+import { acquireWakeLock, releaseWakeLock, installWakeLockReacquire } from "../lib/wakeLock";
 import {
   openRecordingDB,
   createSession,
@@ -23,6 +27,7 @@ import {
 } from "../lib/recordingStore";
 import { downloadBlob } from "../lib/download";
 import type { CaptureStatus, RecordingSession, StreamRole, UserRole } from "../types";
+import type { RecordingWarning } from "../components/RecordingControls";
 
 /**
  * Session-scoped only (D-09) — one checkbox, once per browser session, not
@@ -39,13 +44,6 @@ const readStoredConsent = (): boolean => {
   } catch {
     return false;
   }
-};
-
-const formatElapsed = (ms: number): string => {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 };
 
 /**
@@ -66,6 +64,16 @@ export const LiveInterview: React.FC = () => {
   const [formatUnsupported, setFormatUnsupported] = useState(false);
   const [hasConsented, setHasConsented] = useState(readStoredConsent);
   const [role, setRole] = useState<UserRole>("candidate");
+
+  // D-14: a soft, dismissible notice when the platform refuses the screen
+  // wake lock — the refusal never blocks or interrupts recording.
+  const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
+
+  // Silence watchdog: fifteen continuous seconds of near-silence on the tab
+  // stream, after a five-second grace period, raises this — cleared
+  // automatically once the level rises again. Never pauses or stops the
+  // recording itself.
+  const [tabSilent, setTabSilent] = useState(false);
 
   // UA-family capability gate (D-01, D-05) — computed once, it does not
   // change over the component's lifetime.
@@ -88,6 +96,30 @@ export const LiveInterview: React.FC = () => {
   const cancelledRef = useRef(false);
   const connectButtonRef = useRef<HTMLButtonElement | null>(null);
 
+  // Level meters are observability only (T-04-13) — created once both streams
+  // exist, read from a rAF loop in RecordingControls, and never on the
+  // critical path of the recording itself.
+  const micMeterRef = useRef<LevelMeterHandle | null>(null);
+  const tabMeterRef = useRef<LevelMeterHandle | null>(null);
+
+  // D-03: elapsedMs is derived from clockOrigin, the same performance.now()
+  // origin the recorder pair timestamps every chunk against — never from
+  // summed timeslice intervals. pausedMsRef accumulates total time spent
+  // paused so the timer can freeze and resume without drifting.
+  const pausedMsRef = useRef(0);
+  const pauseStartRef = useRef<number | null>(null);
+
+  // Read by the wake-lock re-acquire predicate and the silence-watchdog
+  // interval, both of which need the latest status inside a closure that
+  // isn't re-created on every status change.
+  const statusRef = useRef<CaptureStatus>(status);
+  statusRef.current = status;
+
+  // Tracks how long the tab stream has been continuously near-silent, for
+  // the silence watchdog below. Reset whenever the level rises again or a
+  // recording is not actively in progress.
+  const silenceStartRef = useRef<number | null>(null);
+
   liveStreamsRef.current = { mic: micStream, tab: tabStream };
 
   // Consent resolving unmounts the gate's own "Continue" button — focus
@@ -108,16 +140,95 @@ export const LiveInterview: React.FC = () => {
       stopStream(liveStreamsRef.current.mic);
       stopStream(liveStreamsRef.current.tab);
       recorderHandleRef.current?.stopAll().catch(() => {});
+      releaseWakeLock();
     };
   }, []);
 
   // A wall-clock timer independent of chunk delivery — dataavailable/
-  // timeslice timing is not exact enough to double as an elapsed clock.
+  // timeslice timing is not exact enough to double as an elapsed clock
+  // (Common Pitfall 3). Only running while status === "recording" is what
+  // makes the timer freeze on pause; pausedMsRef.current is subtracted so
+  // resuming continues from where it froze rather than losing the gap.
   useEffect(() => {
     if (status !== "recording" || !session) return;
     const id = window.setInterval(() => {
-      setElapsedMs(performance.now() - session.clockOrigin);
+      setElapsedMs(performance.now() - session.clockOrigin - pausedMsRef.current);
     }, 1000);
+    return () => window.clearInterval(id);
+  }, [status, session]);
+
+  // Two level meters, created once both streams exist (armed state onward,
+  // before any MediaRecorder starts) and torn down in cleanup. A
+  // cancellation flag guards a StrictMode double-mount, matching Pattern 8 —
+  // even though createLevelMeter is synchronous today, the guard costs
+  // nothing and keeps this effect safe if that ever changes.
+  useEffect(() => {
+    if (!micStream || !tabStream) return;
+    let cancelled = false;
+
+    const micMeter = createLevelMeter(micStream);
+    const tabMeter = createLevelMeter(tabStream);
+
+    if (cancelled) {
+      micMeter?.close();
+      tabMeter?.close();
+      return;
+    }
+
+    micMeterRef.current = micMeter;
+    tabMeterRef.current = tabMeter;
+
+    return () => {
+      cancelled = true;
+      micMeterRef.current?.close();
+      tabMeterRef.current?.close();
+      micMeterRef.current = null;
+      tabMeterRef.current = null;
+    };
+  }, [micStream, tabStream]);
+
+  // Browsers auto-release the wake lock whenever the tab is hidden (D-14) —
+  // re-request it whenever the tab regains visibility while a recording
+  // (recording or paused) is still active. Installed only for the lifetime
+  // of an active recording and removed the moment it ends.
+  const isActiveRecording = status === "recording" || status === "paused";
+  useEffect(() => {
+    if (!isActiveRecording) return;
+    const remove = installWakeLockReacquire(
+      () => statusRef.current === "recording" || statusRef.current === "paused"
+    );
+    return remove;
+  }, [isActiveRecording]);
+
+  // Silence watchdog: ignores the first SILENCE_GRACE_MS after recording
+  // starts, then raises tabSilent once the tab stream's level has stayed
+  // below NEAR_SILENCE_RMS continuously for SILENCE_WATCHDOG_MS. Clears
+  // itself the moment the level rises again — never touches recording state.
+  useEffect(() => {
+    if (status !== "recording" || !session) {
+      silenceStartRef.current = null;
+      setTabSilent(false);
+      return;
+    }
+
+    const id = window.setInterval(() => {
+      const sinceStart = performance.now() - session.clockOrigin - pausedMsRef.current;
+      if (sinceStart < SILENCE_GRACE_MS) return;
+
+      const level = tabMeterRef.current?.read();
+      if (level === undefined) return; // no meter to watch — never blocks recording
+
+      if (level < NEAR_SILENCE_RMS) {
+        if (silenceStartRef.current === null) silenceStartRef.current = performance.now();
+        if (performance.now() - silenceStartRef.current >= SILENCE_WATCHDOG_MS) {
+          setTabSilent(true);
+        }
+      } else {
+        silenceStartRef.current = null;
+        setTabSilent(false);
+      }
+    }, 500);
+
     return () => window.clearInterval(id);
   }, [status, session]);
 
@@ -237,12 +348,36 @@ export const LiveInterview: React.FC = () => {
 
       dbRef.current = db;
       recorderHandleRef.current = handle;
+      pausedMsRef.current = 0;
+      pauseStartRef.current = null;
       setSession(newSession);
       setElapsedMs(0);
       setStatus("recording");
+
+      // A wake-lock refusal is a soft warning, never a reason to stop or
+      // fail to start a recording (D-14).
+      const gotLock = await acquireWakeLock();
+      setWakeLockUnavailable(!gotLock);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start recording.");
     }
+  };
+
+  const handlePause = () => {
+    if (!recorderHandleRef.current || status !== "recording") return;
+    recorderHandleRef.current.pause();
+    pauseStartRef.current = performance.now();
+    setStatus("paused");
+  };
+
+  const handleResume = () => {
+    if (!recorderHandleRef.current || status !== "paused") return;
+    if (pauseStartRef.current !== null) {
+      pausedMsRef.current += performance.now() - pauseStartRef.current;
+      pauseStartRef.current = null;
+    }
+    recorderHandleRef.current.resume();
+    setStatus("recording");
   };
 
   const handleStop = async () => {
@@ -250,10 +385,19 @@ export const LiveInterview: React.FC = () => {
     setError("");
     try {
       await recorderHandleRef.current.stopAll();
-      const finalDuration = performance.now() - session.clockOrigin;
+      const finalDuration = performance.now() - session.clockOrigin - pausedMsRef.current;
       await markSessionStopped(dbRef.current, session.sessionId, finalDuration);
       stopStream(micStream);
       stopStream(tabStream);
+      releaseWakeLock();
+      // Clearing the stream refs (not just stopping their tracks) is what
+      // triggers the level-meter effect's cleanup — otherwise the meters'
+      // AudioContexts and RecordingControls' rAF loop would stay open after
+      // a session has stopped.
+      setMicStream(null);
+      setTabStream(null);
+      setWakeLockUnavailable(false);
+      setTabSilent(false);
       setElapsedMs(finalDuration);
       setStatus("stopped");
     } catch (err) {
@@ -273,6 +417,23 @@ export const LiveInterview: React.FC = () => {
       );
     }
   };
+
+  const warnings: RecordingWarning[] = [];
+  if (wakeLockUnavailable) {
+    warnings.push({
+      id: "wake-lock",
+      message:
+        "Your screen may sleep during a long call — keep this tab active and your device plugged in.",
+      onDismiss: () => setWakeLockUnavailable(false),
+    });
+  }
+  if (tabSilent) {
+    warnings.push({
+      id: "silence-watchdog",
+      message:
+        "The interviewer's tab audio has been silent for over 15 seconds. Check that 'Share audio' is still enabled and that the other person isn't muted.",
+    });
+  }
 
   return (
     <ToolSection
@@ -314,79 +475,27 @@ export const LiveInterview: React.FC = () => {
               </p>
             </div>
 
-            {status === "idle" && (
-              <button
-                ref={connectButtonRef}
-                onClick={handleConnect}
-                className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-              >
-                <span>Connect microphone &amp; screen</span>
-              </button>
-            )}
-
-            {status === "connecting" && (
-              <button
-                disabled
-                className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] disabled:opacity-50"
-              >
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Connecting to microphone and screen…</span>
-              </button>
-            )}
-
-            {status === "armed" && (
-              <div className="flex flex-col gap-3">
-                {tabAudioMissing && !acknowledgedSilentTab && (
-                  <div className="w-full flex items-start gap-2.5 text-xs text-red-500 bg-red-500/10 border border-red-500/15 rounded-[6px] px-4 py-4">
-                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div className="flex flex-col gap-3 flex-1">
-                      <span>
-                        You shared without ticking 'Share tab audio' — the interviewer's side
-                        won't be recorded. Click 'Share again' and make sure the audio checkbox
-                        is ticked before you confirm.
-                      </span>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={handleShareAgain}
-                          className="px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
-                        >
-                          Share again
-                        </button>
-                        <button
-                          onClick={() => setAcknowledgedSilentTab(true)}
-                          className="px-3 py-1.5 rounded-[5px] border border-[rgba(255,255,255,0.07)] bg-transparent text-[#9aa3b0] hover:text-[#eef0f3] text-xs font-medium transition-all active:scale-95"
-                        >
-                          Record anyway (interviewer audio will be silent)
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <button
-                  onClick={handleBegin}
-                  disabled={tabAudioMissing && !acknowledgedSilentTab}
-                  className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-                >
-                  <Circle className="w-4 h-4" />
-                  <span>Begin recording</span>
-                </button>
-              </div>
-            )}
-
-            {(status === "recording" || status === "paused") && (
-              <div className="flex flex-col items-center gap-3">
-                <span className="text-4xl font-extrabold font-mono text-[#eef0f3] tracking-tight">
-                  {formatElapsed(elapsedMs)}
-                </span>
-                <button
-                  onClick={handleStop}
-                  className="w-full inline-flex items-center justify-center gap-2.5 bg-red-500 hover:opacity-90 text-white font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all"
-                >
-                  <Square className="w-4 h-4" />
-                  <span>Stop recording</span>
-                </button>
-              </div>
-            )}
+            <RecordingControls
+              status={status}
+              micStream={micStream}
+              tabStream={tabStream}
+              micRole={resolveStreamRoles(role).mic}
+              tabRole={resolveStreamRoles(role).tab}
+              elapsedMs={elapsedMs}
+              tabAudioMissing={tabAudioMissing}
+              acknowledgedSilentTab={acknowledgedSilentTab}
+              micMeterRef={micMeterRef}
+              tabMeterRef={tabMeterRef}
+              onConnect={handleConnect}
+              onBegin={handleBegin}
+              onPause={handlePause}
+              onResume={handleResume}
+              onStop={handleStop}
+              onReshare={handleShareAgain}
+              onAcknowledgeSilentTab={() => setAcknowledgedSilentTab(true)}
+              connectButtonRef={connectButtonRef}
+              warnings={warnings}
+            />
 
             {status === "stopped" && (
               <div className="flex flex-col gap-4 border-t border-[rgba(255,255,255,0.07)] pt-5">
@@ -395,8 +504,8 @@ export const LiveInterview: React.FC = () => {
                     Download your recording
                   </h3>
                   <p className="text-xs text-[#6b7685] mt-1">
-                    Two separate audio files — one per speaker. Recording complete —{" "}
-                    {formatElapsed(elapsedMs)}.
+                    Two separate audio files — one per speaker. Nothing was uploaded; these come
+                    straight from this browser's storage.
                   </p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
