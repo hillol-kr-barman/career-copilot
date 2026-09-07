@@ -192,6 +192,21 @@ export const LiveInterview: React.FC = () => {
   const pausedMsRef = useRef(0);
   const pauseStartRef = useRef<number | null>(null);
 
+  // CR-03: carries the resumed session's tsOffsetMs out of handleBegin so
+  // handleReshareTabAfterRevoke's ad-hoc recorder can apply the same resume
+  // offset the normal onChunk callback already applies in handleBegin — one
+  // timestamp convention across both recorder sources, whether or not the
+  // session was resumed. Zero for a fresh (non-resumed) session.
+  const tsOffsetMsRef = useRef(0);
+
+  // Accumulates ONLY genuinely paused wall-clock time, unlike pausedMsRef —
+  // that ref is overloaded, seeded to -tsOffsetMs for a resumed session so
+  // the elapsed timer can carry the recovered offset, and subtracting it
+  // from a stored timestamp would double-count that offset. Subtracted once,
+  // at display time in handleStop, from the assembled summaries' durationMs;
+  // stored chunk tsMs never carries a pause adjustment.
+  const pausedSpanMsRef = useRef(0);
+
   // Read by the wake-lock re-acquire predicate and the silence-watchdog
   // interval, both of which need the latest status inside a closure that
   // isn't re-created on every status change.
@@ -504,7 +519,11 @@ export const LiveInterview: React.FC = () => {
               sessionId: session.sessionId,
               streamRole: tabRole,
               seq: seq++,
-              tsMs: performance.now() - session.clockOrigin - pausedMsRef.current,
+              // CR-03: same convention as the normal per-chunk path (raw
+              // wall-clock since clockOrigin, plus the resumed session's
+              // offset) — never pause-adjusted, so a resumed-then-reshared
+              // session stays on one continuous timeline.
+              tsMs: performance.now() - session.clockOrigin + tsOffsetMsRef.current,
               size: e.data.size,
               mimeType: session.mimeType,
             };
@@ -676,6 +695,8 @@ export const LiveInterview: React.FC = () => {
       dbRef.current = db;
       recorderHandleRef.current = handle;
       pausedMsRef.current = resumeSeed ? -tsOffsetMs : 0;
+      tsOffsetMsRef.current = tsOffsetMs;
+      pausedSpanMsRef.current = 0;
       pauseStartRef.current = null;
       resumeSeedRef.current = null;
       setIsResumingSession(false);
@@ -702,7 +723,9 @@ export const LiveInterview: React.FC = () => {
   const handleResume = () => {
     if (!recorderHandleRef.current || status !== "paused") return;
     if (pauseStartRef.current !== null) {
-      pausedMsRef.current += performance.now() - pauseStartRef.current;
+      const pauseSpanMs = performance.now() - pauseStartRef.current;
+      pausedMsRef.current += pauseSpanMs;
+      pausedSpanMsRef.current += pauseSpanMs;
       pauseStartRef.current = null;
     }
     recorderHandleRef.current.resume();
@@ -777,8 +800,20 @@ export const LiveInterview: React.FC = () => {
         assembleStreamBlob(session.sessionId, "candidate", session.mimeType),
         assembleStreamBlob(session.sessionId, "interviewer", session.mimeType),
       ]);
-      setCandidateSummary(candidateResult.summary);
-      setInterviewerSummary(interviewerResult.summary);
+      // Stored tsMs is raw wall-clock (never pause-adjusted) so Phase 5 can
+      // merge the two streams by time; the download surface instead shows a
+      // pause-excluded duration so it agrees with the "Recording complete"
+      // line above it, which is derived from finalDuration (also
+      // pause-excluded). This derivation point is the only place pause is
+      // subtracted from a duration — no stored chunk record is ever rewritten.
+      setCandidateSummary({
+        ...candidateResult.summary,
+        durationMs: Math.max(0, candidateResult.summary.durationMs - pausedSpanMsRef.current),
+      });
+      setInterviewerSummary({
+        ...interviewerResult.summary,
+        durationMs: Math.max(0, interviewerResult.summary.durationMs - pausedSpanMsRef.current),
+      });
       setCandidateUnreadableCount(candidateResult.unreadableCount);
       setInterviewerUnreadableCount(interviewerResult.unreadableCount);
       setInterviewerNearSilent(
