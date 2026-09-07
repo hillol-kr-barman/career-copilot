@@ -979,7 +979,6 @@ export const LiveInterview: React.FC = () => {
           <CrashRecoveryPrompt
             session={recoveryInfo.session}
             capturedDurationMs={recoveryInfo.latestTsMs}
-            chunkCounts={recoveryInfo.chunkCounts}
             onResume={handleResumeRecovery}
             onDiscard={handleDiscardRecovery}
           />
@@ -1044,7 +1043,7 @@ export const LiveInterview: React.FC = () => {
               onReshareTab={handleReshareTabAfterRevoke}
             />
 
-            {status === "stopped" && candidateSummary && interviewerSummary && (
+            {status === "stopped" && session && candidateSummary && interviewerSummary && (
               <RecordingDownloads
                 candidateSummary={candidateSummary}
                 interviewerSummary={interviewerSummary}
@@ -1052,6 +1051,7 @@ export const LiveInterview: React.FC = () => {
                 candidateUnreadableCount={candidateUnreadableCount}
                 interviewerUnreadableCount={interviewerUnreadableCount}
                 downloadingRoles={downloadingRoles}
+                mimeType={session.mimeType}
                 onDownload={handleDownloadStream}
               />
             )}

@@ -12,11 +12,21 @@ const formatElapsed = (ms: number): string => {
 
 const formatSizeMb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1);
 
-/** Filenames follow the stream's role, not the visitor's own (D-19). */
-const DOWNLOAD_FILENAMES: Record<StreamRole, string> = {
-  candidate: "candidate-audio.webm",
-  interviewer: "interviewer-audio.webm",
-};
+/**
+ * Extension the container the file actually holds — `pickSupportedMimeType`
+ * can negotiate the Ogg fallback, so a filename that always says `.webm`
+ * mislabels an Ogg file whenever that path is exercised (WR-03).
+ */
+const extensionForMimeType = (mimeType: string): string =>
+  mimeType.includes("ogg") ? "ogg" : "webm";
+
+/**
+ * The filename still follows the stream's role, not the visitor's own
+ * (D-19) — and now the extension follows the session's negotiated
+ * container rather than a static assumption.
+ */
+const filenameForRole = (role: StreamRole, mimeType: string): string =>
+  `${role}-audio.${extensionForMimeType(mimeType)}`;
 
 /**
  * No interviewer bytes were ever captured — the tab share almost certainly
@@ -67,7 +77,9 @@ export interface RecordingDownloadsProps {
   interviewerUnreadableCount: number;
   /** Per-stream in-flight flag — a pressed button is disabled and spinning while its own assembly runs; the other stream's button is unaffected. */
   downloadingRoles: Partial<Record<StreamRole, boolean>>;
-  /** Filename follows the stream's role (D-19) — `candidate-audio.webm` / `interviewer-audio.webm`. */
+  /** The session's negotiated MIME type — the derived filename's extension follows this container, not a static assumption (WR-03). */
+  mimeType: string;
+  /** Filename follows the stream's role, not the visitor's own (D-19) — derived from the session's mimeType, e.g. `candidate-audio.webm` or `candidate-audio.ogg`. */
   onDownload: (role: StreamRole, filename: string) => void;
 }
 
@@ -86,6 +98,7 @@ export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
   candidateUnreadableCount,
   interviewerUnreadableCount,
   downloadingRoles,
+  mimeType,
   onDownload,
 }) => {
   const candidateState = deriveSlotState(candidateSummary, false, false);
@@ -133,6 +146,7 @@ export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
           summary={candidateSummary}
           state={candidateState}
           isDownloading={Boolean(downloadingRoles.candidate)}
+          filename={filenameForRole("candidate", mimeType)}
           onDownload={onDownload}
         />
         <DownloadSlot
@@ -142,6 +156,7 @@ export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
           summary={interviewerSummary}
           state={interviewerState}
           isDownloading={Boolean(downloadingRoles.interviewer)}
+          filename={filenameForRole("interviewer", mimeType)}
           onDownload={onDownload}
         />
       </div>
@@ -161,6 +176,7 @@ interface DownloadSlotProps {
   summary: StreamSummary;
   state: SlotState;
   isDownloading: boolean;
+  filename: string;
   onDownload: (role: StreamRole, filename: string) => void;
 }
 
@@ -171,6 +187,7 @@ const DownloadSlot: React.FC<DownloadSlotProps> = ({
   summary,
   state,
   isDownloading,
+  filename,
   onDownload,
 }) => {
   if (state.kind === "empty") {
@@ -183,7 +200,7 @@ const DownloadSlot: React.FC<DownloadSlotProps> = ({
 
   return (
     <button
-      onClick={() => onDownload(role, DOWNLOAD_FILENAMES[role])}
+      onClick={() => onDownload(role, filename)}
       disabled={isDownloading}
       className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-left"
     >

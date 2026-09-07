@@ -1,13 +1,11 @@
 import React, { useState } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
-import type { RecordingSession, StreamRole } from "../types";
+import type { RecordingSession } from "../types";
 
 export interface CrashRecoveryPromptProps {
   session: RecordingSession;
   /** The highest chunk timestamp observed for the recovered session, in ms. */
   capturedDurationMs: number;
-  /** Per-stream chunk counts — not shown directly, kept for future context. */
-  chunkCounts: Partial<Record<StreamRole, number>>;
   onResume: () => void;
   onDiscard: () => void;
 }
