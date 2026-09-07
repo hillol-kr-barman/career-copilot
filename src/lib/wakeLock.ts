@@ -41,11 +41,18 @@ export function releaseWakeLock(): void {
  * sentinel is currently held — the only way to hold the lock across a
  * tab-switch, since the browser silently drops it on hide. Returns the
  * removal function for effect cleanup.
+ *
+ * The caller is told the outcome of every re-acquire attempt via `onResult` —
+ * this is what lets a soft warning track reality across a tab switch, rather
+ * than only ever reflecting the initial acquire at recording start (WR-01).
  */
-export function installWakeLockReacquire(isRecordingActive: () => boolean): () => void {
+export function installWakeLockReacquire(
+  isRecordingActive: () => boolean,
+  onResult: (gotLock: boolean) => void
+): () => void {
   const handler = () => {
     if (document.visibilityState === "visible" && isRecordingActive() && sentinel === null) {
-      void acquireWakeLock();
+      void acquireWakeLock().then(onResult);
     }
   };
   document.addEventListener("visibilitychange", handler);

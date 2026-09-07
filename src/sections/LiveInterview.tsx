@@ -107,6 +107,11 @@ export const LiveInterview: React.FC = () => {
   // wake lock — the refusal never blocks or interrupts recording.
   const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
 
+  // WR-01: records that the visitor dismissed the soft wake-lock warning, so
+  // a repeated failure does not keep re-raising it every time the tab regains
+  // visibility. Reset to false at the start of each new/resumed recording.
+  const wakeLockDismissedRef = useRef(false);
+
   // Silence watchdog: fifteen continuous seconds of near-silence on the tab
   // stream, after a five-second grace period, raises this — cleared
   // automatically once the level rises again. Never pauses or stops the
@@ -357,7 +362,15 @@ export const LiveInterview: React.FC = () => {
   useEffect(() => {
     if (!isActiveRecording) return;
     const remove = installWakeLockReacquire(
-      () => statusRef.current === "recording" || statusRef.current === "paused"
+      () => statusRef.current === "recording" || statusRef.current === "paused",
+      (gotLock) => {
+        if (gotLock) {
+          setWakeLockUnavailable(false);
+          wakeLockDismissedRef.current = false;
+        } else if (!wakeLockDismissedRef.current) {
+          setWakeLockUnavailable(true);
+        }
+      }
     );
     return remove;
   }, [isActiveRecording]);
@@ -743,6 +756,7 @@ export const LiveInterview: React.FC = () => {
       // fail to start a recording (D-14).
       const gotLock = await acquireWakeLock();
       setWakeLockUnavailable(!gotLock);
+      wakeLockDismissedRef.current = false;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start recording.");
     }
@@ -901,7 +915,10 @@ export const LiveInterview: React.FC = () => {
       id: "wake-lock",
       message:
         "Your screen may sleep during a long call — keep this tab active and your device plugged in.",
-      onDismiss: () => setWakeLockUnavailable(false),
+      onDismiss: () => {
+        setWakeLockUnavailable(false);
+        wakeLockDismissedRef.current = true;
+      },
     });
   }
   if (tabSilent) {
