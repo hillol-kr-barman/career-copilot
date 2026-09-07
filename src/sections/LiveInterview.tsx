@@ -179,6 +179,20 @@ export const LiveInterview: React.FC = () => {
   // yet this session.
   const reshareTabRecorderRef = useRef<MediaRecorder | null>(null);
 
+  // CR-04: the outgoing tab recorder's stop-flush promise, set by
+  // attachTabEndedListener's ended handler and awaited by
+  // handleReshareTabAfterRevoke before it reads a sequence number — so a
+  // reshare can never claim a seq the outgoing recorder's final write is
+  // still in flight for. Null whenever no revoke has happened yet.
+  const tabFlushDoneRef = useRef<Promise<void> | null>(null);
+
+  // CR-04: the most recent appendChunk promise (already .catch()-chained,
+  // so awaiting it can never throw), reassigned on every chunk write from
+  // either recorder source. handleReshareTabAfterRevoke awaits this after
+  // tabFlushDoneRef so the outgoing recorder's write has actually committed
+  // before the reshare reads nextSeqFor.
+  const pendingChunkWritesRef = useRef<Promise<unknown>>(Promise.resolve());
+
   // Level meters are observability only (T-04-13) — created once both streams
   // exist, read from a rAF loop in RecordingControls, and never on the
   // critical path of the recording itself.
@@ -191,6 +205,21 @@ export const LiveInterview: React.FC = () => {
   // paused so the timer can freeze and resume without drifting.
   const pausedMsRef = useRef(0);
   const pauseStartRef = useRef<number | null>(null);
+
+  // CR-03: carries the resumed session's tsOffsetMs out of handleBegin so
+  // handleReshareTabAfterRevoke's ad-hoc recorder can apply the same resume
+  // offset the normal onChunk callback already applies in handleBegin — one
+  // timestamp convention across both recorder sources, whether or not the
+  // session was resumed. Zero for a fresh (non-resumed) session.
+  const tsOffsetMsRef = useRef(0);
+
+  // Accumulates ONLY genuinely paused wall-clock time, unlike pausedMsRef —
+  // that ref is overloaded, seeded to -tsOffsetMs for a resumed session so
+  // the elapsed timer can carry the recovered offset, and subtracting it
+  // from a stored timestamp would double-count that offset. Subtracted once,
+  // at display time in handleStop, from the assembled summaries' durationMs;
+  // stored chunk tsMs never carries a pause adjustment.
+  const pausedSpanMsRef = useRef(0);
 
   // Read by the wake-lock re-acquire predicate and the silence-watchdog
   // interval, both of which need the latest status inside a closure that
@@ -437,14 +466,19 @@ export const LiveInterview: React.FC = () => {
    * stream's chunks — the original one created inside `startRecorderPair`,
    * or the ad-hoc one created by `handleReshareTabAfterRevoke` after a
    * re-share — so a revoke always stops the right recorder no matter how
-   * many times the tab has been re-shared this session.
+   * many times the tab has been re-shared this session. Resolves once that
+   * recorder has flushed its final chunk (CR-04).
    */
-  const stopActiveTabRecorder = () => {
-    if (reshareTabRecorderRef.current && reshareTabRecorderRef.current.state !== "inactive") {
-      reshareTabRecorderRef.current.stop();
-    } else {
-      recorderHandleRef.current?.stopTab();
+  const stopActiveTabRecorder = (): Promise<void> => {
+    if (reshareTabRecorderRef.current) {
+      const recorder = reshareTabRecorderRef.current;
+      if (recorder.state === "inactive") return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        recorder.addEventListener("stop", () => resolve(), { once: true });
+        recorder.stop();
+      });
     }
+    return recorderHandleRef.current?.stopTab() ?? Promise.resolve();
   };
 
   /**
@@ -459,7 +493,11 @@ export const LiveInterview: React.FC = () => {
   const attachTabEndedListener = (stream: MediaStream) => {
     const handleEnded = () => {
       if (statusRef.current !== "recording" && statusRef.current !== "paused") return;
-      stopActiveTabRecorder();
+      // Stays synchronous: this is a native event listener, and the
+      // statusRef guard above must run before any await point. The flush
+      // promise is stored for handleReshareTabAfterRevoke to await later
+      // (CR-04).
+      tabFlushDoneRef.current = stopActiveTabRecorder();
       setShareRevoked(true);
     };
     stream.getTracks().forEach((track) => {
@@ -495,6 +533,18 @@ export const LiveInterview: React.FC = () => {
       if (db && session && (statusRef.current === "recording" || statusRef.current === "paused")) {
         const roleMap = resolveStreamRoles(role);
         const tabRole = roleMap.tab;
+
+        // CR-04: the outgoing recorder's stop event guarantees its final
+        // dataavailable has already dispatched, and awaiting the write
+        // promise guarantees that chunk's transaction has committed — only
+        // once both have settled can nextSeqFor be trusted not to collide
+        // with an in-flight put().
+        if (tabFlushDoneRef.current) {
+          await tabFlushDoneRef.current;
+          tabFlushDoneRef.current = null;
+        }
+        await pendingChunkWritesRef.current;
+
         let seq = await nextSeqFor(session.sessionId, tabRole);
 
         const recorder = new MediaRecorder(tabResult.stream, { mimeType: session.mimeType });
@@ -504,11 +554,15 @@ export const LiveInterview: React.FC = () => {
               sessionId: session.sessionId,
               streamRole: tabRole,
               seq: seq++,
-              tsMs: performance.now() - session.clockOrigin - pausedMsRef.current,
+              // CR-03: same convention as the normal per-chunk path (raw
+              // wall-clock since clockOrigin, plus the resumed session's
+              // offset) — never pause-adjusted, so a resumed-then-reshared
+              // session stays on one continuous timeline.
+              tsMs: performance.now() - session.clockOrigin + tsOffsetMsRef.current,
               size: e.data.size,
               mimeType: session.mimeType,
             };
-            appendChunk(db, meta, e.data).catch((chunkErr) => {
+            pendingChunkWritesRef.current = appendChunk(db, meta, e.data).catch((chunkErr) => {
               setError(
                 chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk."
               );
@@ -656,7 +710,7 @@ export const LiveInterview: React.FC = () => {
         (meta, blob) => {
           const seqOffset = meta.streamRole === roleMap.mic ? seedSeq.mic : seedSeq.tab;
           const adjusted = { ...meta, sessionId, seq: meta.seq + seqOffset, tsMs: meta.tsMs + tsOffsetMs };
-          appendChunk(db, adjusted, blob).catch((chunkErr) => {
+          pendingChunkWritesRef.current = appendChunk(db, adjusted, blob).catch((chunkErr) => {
             setError(
               chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk."
             );
@@ -676,6 +730,8 @@ export const LiveInterview: React.FC = () => {
       dbRef.current = db;
       recorderHandleRef.current = handle;
       pausedMsRef.current = resumeSeed ? -tsOffsetMs : 0;
+      tsOffsetMsRef.current = tsOffsetMs;
+      pausedSpanMsRef.current = 0;
       pauseStartRef.current = null;
       resumeSeedRef.current = null;
       setIsResumingSession(false);
@@ -702,7 +758,9 @@ export const LiveInterview: React.FC = () => {
   const handleResume = () => {
     if (!recorderHandleRef.current || status !== "paused") return;
     if (pauseStartRef.current !== null) {
-      pausedMsRef.current += performance.now() - pauseStartRef.current;
+      const pauseSpanMs = performance.now() - pauseStartRef.current;
+      pausedMsRef.current += pauseSpanMs;
+      pausedSpanMsRef.current += pauseSpanMs;
       pauseStartRef.current = null;
     }
     recorderHandleRef.current.resume();
@@ -777,8 +835,20 @@ export const LiveInterview: React.FC = () => {
         assembleStreamBlob(session.sessionId, "candidate", session.mimeType),
         assembleStreamBlob(session.sessionId, "interviewer", session.mimeType),
       ]);
-      setCandidateSummary(candidateResult.summary);
-      setInterviewerSummary(interviewerResult.summary);
+      // Stored tsMs is raw wall-clock (never pause-adjusted) so Phase 5 can
+      // merge the two streams by time; the download surface instead shows a
+      // pause-excluded duration so it agrees with the "Recording complete"
+      // line above it, which is derived from finalDuration (also
+      // pause-excluded). This derivation point is the only place pause is
+      // subtracted from a duration — no stored chunk record is ever rewritten.
+      setCandidateSummary({
+        ...candidateResult.summary,
+        durationMs: Math.max(0, candidateResult.summary.durationMs - pausedSpanMsRef.current),
+      });
+      setInterviewerSummary({
+        ...interviewerResult.summary,
+        durationMs: Math.max(0, interviewerResult.summary.durationMs - pausedSpanMsRef.current),
+      });
       setCandidateUnreadableCount(candidateResult.unreadableCount);
       setInterviewerUnreadableCount(interviewerResult.unreadableCount);
       setInterviewerNearSilent(
