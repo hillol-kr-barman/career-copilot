@@ -590,6 +590,24 @@ export const LiveInterview: React.FC = () => {
     }
   };
 
+  /**
+   * Abandons a pending resume: nulls the resume seed as well as the flag that
+   * locks the role toggle, and reports whether a seed was actually pending
+   * when it was called. Clearing the seed is deliberate — unlocking the
+   * toggle while a seed is still pending would let the visitor flip roles and
+   * then have the next Begin apply recovered sequence numbers to the wrong
+   * physical stream, which is the exact mislabelling the lock exists to
+   * prevent (WR-02). The recovered session record itself is untouched and
+   * still carries status "recording", so the recovery prompt is offered
+   * again on the next page load.
+   */
+  const abandonPendingResume = (): boolean => {
+    const wasPending = resumeSeedRef.current !== null;
+    resumeSeedRef.current = null;
+    setIsResumingSession(false);
+    return wasPending;
+  };
+
   const handleAcceptConsent = () => {
     try {
       sessionStorage.setItem(CONSENT_SESSION_KEY, "1");
@@ -611,8 +629,13 @@ export const LiveInterview: React.FC = () => {
     try {
       mic = await acquireMic();
     } catch (err) {
+      const seedWasPending = abandonPendingResume();
       setStatus("idle");
-      setError(describeCaptureError(err, "mic"));
+      setError(
+        seedWasPending
+          ? `${describeCaptureError(err, "mic")} Your unfinished recording is still saved — reload the page to try recovering it again.`
+          : describeCaptureError(err, "mic")
+      );
       return;
     }
 
@@ -635,8 +658,13 @@ export const LiveInterview: React.FC = () => {
     } catch (err) {
       stopStream(mic);
       stopStream(tab);
+      const seedWasPending = abandonPendingResume();
       setStatus("idle");
-      setError(describeCaptureError(err, "display"));
+      setError(
+        seedWasPending
+          ? `${describeCaptureError(err, "display")} Your unfinished recording is still saved — reload the page to try recovering it again.`
+          : describeCaptureError(err, "display")
+      );
     }
   };
 
