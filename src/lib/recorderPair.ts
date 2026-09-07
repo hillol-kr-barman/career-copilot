@@ -38,8 +38,11 @@ export interface RecorderPairHandle {
   clockOrigin: number;
   /** Resolves once both recorders have flushed their final chunk. */
   stopAll: () => Promise<void>;
-  /** Stops only the tab recorder — for the revoked-share flow (plan 04-05). */
-  stopTab: () => void;
+  /**
+   * Stops only the tab recorder — for the revoked-share flow (plan 04-05).
+   * Resolves once the tab recorder has flushed its final chunk (CR-04).
+   */
+  stopTab: () => Promise<void>;
   pause: () => void;
   resume: () => void;
 }
@@ -115,7 +118,9 @@ export function startRecorderPair(
       await Promise.all([micDone, tabDone]);
     },
     stopTab: () => {
+      const tabDone = waitForStop(tabRecorder);
       if (tabRecorder.state !== "inactive") tabRecorder.stop();
+      return tabDone;
     },
     pause: () => {
       if (micRecorder.state === "recording") micRecorder.pause();

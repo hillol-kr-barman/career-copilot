@@ -179,6 +179,20 @@ export const LiveInterview: React.FC = () => {
   // yet this session.
   const reshareTabRecorderRef = useRef<MediaRecorder | null>(null);
 
+  // CR-04: the outgoing tab recorder's stop-flush promise, set by
+  // attachTabEndedListener's ended handler and awaited by
+  // handleReshareTabAfterRevoke before it reads a sequence number — so a
+  // reshare can never claim a seq the outgoing recorder's final write is
+  // still in flight for. Null whenever no revoke has happened yet.
+  const tabFlushDoneRef = useRef<Promise<void> | null>(null);
+
+  // CR-04: the most recent appendChunk promise (already .catch()-chained,
+  // so awaiting it can never throw), reassigned on every chunk write from
+  // either recorder source. handleReshareTabAfterRevoke awaits this after
+  // tabFlushDoneRef so the outgoing recorder's write has actually committed
+  // before the reshare reads nextSeqFor.
+  const pendingChunkWritesRef = useRef<Promise<unknown>>(Promise.resolve());
+
   // Level meters are observability only (T-04-13) — created once both streams
   // exist, read from a rAF loop in RecordingControls, and never on the
   // critical path of the recording itself.
@@ -452,14 +466,19 @@ export const LiveInterview: React.FC = () => {
    * stream's chunks — the original one created inside `startRecorderPair`,
    * or the ad-hoc one created by `handleReshareTabAfterRevoke` after a
    * re-share — so a revoke always stops the right recorder no matter how
-   * many times the tab has been re-shared this session.
+   * many times the tab has been re-shared this session. Resolves once that
+   * recorder has flushed its final chunk (CR-04).
    */
-  const stopActiveTabRecorder = () => {
-    if (reshareTabRecorderRef.current && reshareTabRecorderRef.current.state !== "inactive") {
-      reshareTabRecorderRef.current.stop();
-    } else {
-      recorderHandleRef.current?.stopTab();
+  const stopActiveTabRecorder = (): Promise<void> => {
+    if (reshareTabRecorderRef.current) {
+      const recorder = reshareTabRecorderRef.current;
+      if (recorder.state === "inactive") return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        recorder.addEventListener("stop", () => resolve(), { once: true });
+        recorder.stop();
+      });
     }
+    return recorderHandleRef.current?.stopTab() ?? Promise.resolve();
   };
 
   /**
@@ -474,7 +493,11 @@ export const LiveInterview: React.FC = () => {
   const attachTabEndedListener = (stream: MediaStream) => {
     const handleEnded = () => {
       if (statusRef.current !== "recording" && statusRef.current !== "paused") return;
-      stopActiveTabRecorder();
+      // Stays synchronous: this is a native event listener, and the
+      // statusRef guard above must run before any await point. The flush
+      // promise is stored for handleReshareTabAfterRevoke to await later
+      // (CR-04).
+      tabFlushDoneRef.current = stopActiveTabRecorder();
       setShareRevoked(true);
     };
     stream.getTracks().forEach((track) => {
@@ -510,6 +533,18 @@ export const LiveInterview: React.FC = () => {
       if (db && session && (statusRef.current === "recording" || statusRef.current === "paused")) {
         const roleMap = resolveStreamRoles(role);
         const tabRole = roleMap.tab;
+
+        // CR-04: the outgoing recorder's stop event guarantees its final
+        // dataavailable has already dispatched, and awaiting the write
+        // promise guarantees that chunk's transaction has committed — only
+        // once both have settled can nextSeqFor be trusted not to collide
+        // with an in-flight put().
+        if (tabFlushDoneRef.current) {
+          await tabFlushDoneRef.current;
+          tabFlushDoneRef.current = null;
+        }
+        await pendingChunkWritesRef.current;
+
         let seq = await nextSeqFor(session.sessionId, tabRole);
 
         const recorder = new MediaRecorder(tabResult.stream, { mimeType: session.mimeType });
@@ -527,7 +562,7 @@ export const LiveInterview: React.FC = () => {
               size: e.data.size,
               mimeType: session.mimeType,
             };
-            appendChunk(db, meta, e.data).catch((chunkErr) => {
+            pendingChunkWritesRef.current = appendChunk(db, meta, e.data).catch((chunkErr) => {
               setError(
                 chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk."
               );
@@ -675,7 +710,7 @@ export const LiveInterview: React.FC = () => {
         (meta, blob) => {
           const seqOffset = meta.streamRole === roleMap.mic ? seedSeq.mic : seedSeq.tab;
           const adjusted = { ...meta, sessionId, seq: meta.seq + seqOffset, tsMs: meta.tsMs + tsOffsetMs };
-          appendChunk(db, adjusted, blob).catch((chunkErr) => {
+          pendingChunkWritesRef.current = appendChunk(db, adjusted, blob).catch((chunkErr) => {
             setError(
               chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk."
             );
