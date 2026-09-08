@@ -1,9 +1,25 @@
 import React, { useState } from "react";
 import { ShieldAlert } from "lucide-react";
+import type { Speaker } from "../types";
 
 interface ConsentGateProps {
   onAccept: () => void;
+  /** The operator's declared side (D-24) — lets the notice name both people
+   * in the room concretely rather than describing a call. */
+  declaredSpeaker: Speaker;
 }
+
+/** The other person in the room, from the operator's own declared side. */
+const OTHER_SIDE: Record<Speaker, string> = {
+  candidate: "the interviewer",
+  interviewer: "the candidate",
+};
+
+/** The operator's own side, named plainly rather than "you". */
+const SELF_SIDE: Record<Speaker, string> = {
+  candidate: "the candidate (you)",
+  interviewer: "the interviewer (you)",
+};
 
 /**
  * Blocking inline panel — not a modal, per RESEARCH.md's explicit
@@ -13,11 +29,14 @@ interface ConsentGateProps {
  * inside `lockedReason` itself: that branch renders no children, which would
  * make the checkbox unreachable.
  *
- * The checkbox starts unchecked and is never pre-ticked (D-09) — consent is
- * an affirmative act the visitor takes, never a default the interface
- * supplies.
+ * The checkbox starts unchecked and is never pre-ticked, and Continue stays
+ * disabled until it is ticked — consent is an affirmative act the operator
+ * takes, never a default the interface supplies. Per D-34 this gate is
+ * mounted fresh for every take (the section unmounts it rather than hiding
+ * it), so its checked state can never carry from one take to the next; there
+ * is no reset effect here because there is nothing to reset.
  */
-export const ConsentGate: React.FC<ConsentGateProps> = ({ onAccept }) => {
+export const ConsentGate: React.FC<ConsentGateProps> = ({ onAccept, declaredSpeaker }) => {
   const [checked, setChecked] = useState(false);
 
   return (
@@ -31,9 +50,13 @@ export const ConsentGate: React.FC<ConsentGateProps> = ({ onAccept }) => {
 
       <div className="flex flex-col gap-3">
         <p className="text-sm text-[#9aa3b0] leading-relaxed">
-          Recording someone without telling them can be illegal. Tell every person on the call —
-          including each interviewer on a panel — that you're recording, before you start.
-          Recording-consent laws differ by country and state; some places require everyone's
+          This tool records both people in this room — {SELF_SIDE[declaredSpeaker]} and{" "}
+          {OTHER_SIDE[declaredSpeaker]} — through the one microphone on the table. Every person
+          present must be told they're being recorded before you start, every time you start a
+          new take.
+        </p>
+        <p className="text-sm text-[#9aa3b0] leading-relaxed">
+          Recording-consent law differs by country and state; some places require everyone's
           agreement, not just yours. If you're not sure what applies to you, check before you
           record.
         </p>
@@ -51,7 +74,7 @@ export const ConsentGate: React.FC<ConsentGateProps> = ({ onAccept }) => {
           className="mt-0.5 shrink-0 w-4 h-4 accent-[#00d4dc] focus:outline-none focus:ring-1 focus:ring-[#00d4dc]"
         />
         <label htmlFor="consent-checkbox" className="text-sm text-[#9aa3b0] leading-relaxed">
-          I've told everyone on this call they're being recorded, and I've checked that this is
+          I've told everyone in this room they're being recorded, and I've checked that this is
           legal where I am.
         </label>
       </div>

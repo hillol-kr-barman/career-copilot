@@ -43,23 +43,6 @@ const RECOVERY_FAILED_COPY =
   "This recording couldn't be recovered — the saved data may be corrupted or incomplete. It has been discarded automatically.";
 
 /**
- * Session-scoped only (D-09) — one checkbox, once per browser session, not
- * once forever; this key is never written to any storage that outlives the
- * tab. A blocked `sessionStorage` (private browsing) degrades to false,
- * which simply re-asks; that is the correct conservative behaviour, not an
- * error state.
- */
-const CONSENT_SESSION_KEY = "live_interview_consent_given";
-
-const readStoredConsent = (): boolean => {
-  try {
-    return sessionStorage.getItem(CONSENT_SESSION_KEY) === "1";
-  } catch {
-    return false;
-  }
-};
-
-/**
  * Tool 4 — records both people in the room through one in-room microphone
  * (D-21), a spacebar toggle marks who is speaking into a timestamped tag
  * track (D-23, D-27), and persists every chunk to IndexedDB as it arrives
@@ -73,7 +56,11 @@ export const LiveInterview: React.FC = () => {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState("");
   const [formatUnsupported, setFormatUnsupported] = useState(false);
-  const [hasConsented, setHasConsented] = useState(readStoredConsent);
+  // D-34: a fact about this take, never about the browser session — starts
+  // false on every mount and is reset to false at every take boundary (the
+  // stop path and every failed-acquisition path back to idle). No storage
+  // write, no ref, nothing that outlives the take it was given for.
+  const [hasConsented, setHasConsented] = useState(false);
   const [declaredSpeaker, setDeclaredSpeaker] = useState<Speaker>("candidate");
 
   // D-25: the opening span belongs to the interviewer, so the current-speaker
@@ -390,13 +377,6 @@ export const LiveInterview: React.FC = () => {
   };
 
   const handleAcceptConsent = () => {
-    try {
-      sessionStorage.setItem(CONSENT_SESSION_KEY, "1");
-    } catch {
-      // Private-mode/blocked sessionStorage: consent still applies for the
-      // rest of this render, it just won't survive a reload — re-asking is
-      // the correct conservative fallback (see readStoredConsent above).
-    }
     setHasConsented(true);
   };
 
@@ -417,6 +397,9 @@ export const LiveInterview: React.FC = () => {
     } catch (err) {
       const seedWasPending = abandonPendingResume();
       setStatus("idle");
+      // D-34: an aborted connect never happened as a take — the consent
+      // standing for it must not survive to the next attempt.
+      setHasConsented(false);
       setError(
         seedWasPending
           ? `${describeCaptureError(err)} Your unfinished recording is still saved — reload the page to try recovering it again.`
@@ -553,6 +536,10 @@ export const LiveInterview: React.FC = () => {
     // AudioContext and RecordingControls' rAF loop would stay open after a
     // session has stopped.
     setMicStream(null);
+    // D-34: the take this consent was given for just ended — the gate shows
+    // again the moment the next Start is attempted, with nothing carried
+    // forward.
+    setHasConsented(false);
   };
 
   const handleStop = async () => {
@@ -699,52 +686,55 @@ export const LiveInterview: React.FC = () => {
           </div>
         )}
 
+        {error && (
+          <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* D-24 declaration stays reachable while the consent gate shows, so
+            the operator can set their side before consenting (D-34). */}
+        <RoleToggle
+          declaredSpeaker={declaredSpeaker}
+          onDeclaredSpeakerChange={setDeclaredSpeaker}
+          disabled={isResumingSession || (status !== "idle" && status !== "armed")}
+        />
+
+        {/* D-34: re-asked before every take, wrapping only the acquisition
+            and recording controls — never the download surface below, so a
+            re-ask can't hide a take that just finished (D-31). */}
         {!hasConsented ? (
-          <ConsentGate onAccept={handleAcceptConsent} />
+          <ConsentGate onAccept={handleAcceptConsent} declaredSpeaker={declaredSpeaker} />
         ) : (
-          <>
-            {error && (
-              <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>{error}</span>
-              </div>
-            )}
+          <RecordingControls
+            status={status}
+            micStream={micStream}
+            elapsedMs={elapsedMs}
+            micMeterRef={micMeterRef}
+            speaker={speaker}
+            onConnect={handleConnect}
+            onBegin={handleBegin}
+            onPause={handlePause}
+            onResume={handleResume}
+            onStop={handleStop}
+            onFlipSpeaker={flipSpeaker}
+            connectButtonRef={connectButtonRef}
+            warnings={warnings}
+          />
+        )}
 
-            <RoleToggle
-              declaredSpeaker={declaredSpeaker}
-              onDeclaredSpeakerChange={setDeclaredSpeaker}
-              disabled={isResumingSession || (status !== "idle" && status !== "armed")}
-            />
-
-            <RecordingControls
-              status={status}
-              micStream={micStream}
-              elapsedMs={elapsedMs}
-              micMeterRef={micMeterRef}
-              speaker={speaker}
-              onConnect={handleConnect}
-              onBegin={handleBegin}
-              onPause={handlePause}
-              onResume={handleResume}
-              onStop={handleStop}
-              onFlipSpeaker={flipSpeaker}
-              connectButtonRef={connectButtonRef}
-              warnings={warnings}
-            />
-
-            {status === "stopped" && session && summary && (
-              <RecordingDownloads
-                summary={summary}
-                unreadableCount={unreadableCount}
-                downloading={downloading}
-                sessionId={session.sessionId}
-                startedAt={session.startedAt}
-                mimeType={session.mimeType}
-                onDownloadAudio={handleDownloadAudio}
-                onDownloadSidecar={handleDownloadSidecar}
-              />
-            )}
-          </>
+        {status === "stopped" && session && summary && (
+          <RecordingDownloads
+            summary={summary}
+            unreadableCount={unreadableCount}
+            downloading={downloading}
+            sessionId={session.sessionId}
+            startedAt={session.startedAt}
+            mimeType={session.mimeType}
+            onDownloadAudio={handleDownloadAudio}
+            onDownloadSidecar={handleDownloadSidecar}
+          />
         )}
       </div>
     </ToolSection>
