@@ -67,8 +67,6 @@ export interface RecordingControlsProps {
   micMeterRef: React.RefObject<LevelMeterHandle | null>;
   /** Who the tag track currently attributes speech to — flips on a spacebar press or a click here. */
   speaker: Speaker;
-  /** The operator's own declared side (D-24) — lets the speaker banner mark which side is "you". */
-  declaredSpeaker: Speaker;
   onConnect: () => void;
   onBegin: () => void;
   onPause: () => void;
@@ -96,7 +94,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   elapsedMs,
   micMeterRef,
   speaker,
-  declaredSpeaker,
   onConnect,
   onBegin,
   onPause,
@@ -256,7 +253,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               paused. */}
           <SpeakerBanner
             speaker={speaker}
-            declaredSpeaker={declaredSpeaker}
             onFlip={onFlipSpeaker}
             disabled={status !== "recording"}
           />
