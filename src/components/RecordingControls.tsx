@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { CaptureStatus, Speaker } from "../types";
 import type { LevelMeterHandle } from "../lib/levelMeter";
+import { SpeakerBanner, SPEAKER_LABEL } from "./SpeakerBanner";
 
 /** A soft, non-blocking notice — currently only the wake-lock-unavailable warning. */
 export interface RecordingWarning {
@@ -59,11 +60,6 @@ const CHIP_ICON: Record<ChipState, React.ComponentType<{ className?: string }>> 
   waiting: Loader2,
 };
 
-const SPEAKER_LABEL: Record<Speaker, string> = {
-  candidate: "Candidate",
-  interviewer: "Interviewer",
-};
-
 export interface RecordingControlsProps {
   status: CaptureStatus;
   micStream: MediaStream | null;
@@ -71,6 +67,8 @@ export interface RecordingControlsProps {
   micMeterRef: React.RefObject<LevelMeterHandle | null>;
   /** Who the tag track currently attributes speech to — flips on a spacebar press or a click here. */
   speaker: Speaker;
+  /** The operator's own declared side (D-24) — lets the speaker banner mark which side is "you". */
+  declaredSpeaker: Speaker;
   onConnect: () => void;
   onBegin: () => void;
   onPause: () => void;
@@ -98,6 +96,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   elapsedMs,
   micMeterRef,
   speaker,
+  declaredSpeaker,
   onConnect,
   onBegin,
   onPause,
@@ -159,6 +158,18 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     }
     prevMicStateRef.current = micChipState;
   }, [micChipState]);
+
+  // The speaker banner's own discrete transitions route through this same
+  // polite announcer rather than a second live region — only the change
+  // itself is announced, never a continuous value.
+  const prevSpeakerRef = useRef<Speaker | null>(null);
+
+  useEffect(() => {
+    if (prevSpeakerRef.current !== null && prevSpeakerRef.current !== speaker) {
+      setAnnouncement(`Now speaking: ${SPEAKER_LABEL[speaker]}`);
+    }
+    prevSpeakerRef.current = speaker;
+  }, [speaker]);
 
   const showMeter = streamReady && (status === "armed" || status === "recording" || status === "paused");
 
@@ -236,6 +247,20 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
       {(status === "recording" || status === "paused") && (
         <div className="flex flex-col items-center gap-4">
+          {/* D-38: the band sits directly above the elapsed-timer block so
+              the two largest elements on the page are together. Reachable
+              by keyboard via Space (installed in LiveInterview.tsx) and by
+              click/tap here for anyone not at the keyboard or using
+              assistive technology. Disabled while paused — dimmed, not
+              removed, so the operator can see who was marked when they
+              paused. */}
+          <SpeakerBanner
+            speaker={speaker}
+            declaredSpeaker={declaredSpeaker}
+            onFlip={onFlipSpeaker}
+            disabled={status !== "recording"}
+          />
+
           <div className="w-full bg-[#1c2128] border border-[rgba(255,255,255,0.07)] p-5 rounded-[8px] flex flex-col items-center justify-center gap-2">
             <span className="text-4xl font-extrabold font-mono text-[#eef0f3] tracking-tight">
               {formatElapsed(elapsedMs)}
@@ -252,24 +277,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               </span>
             )}
           </div>
-
-          {/* Current-speaker surface (D-38 gives this its full-width banner
-              treatment in 04-12; here it must already be correct, accessible,
-              and change the instant a press lands). Reachable by keyboard via
-              Space during recording, and by click/tap here for anyone not at
-              the keyboard or using assistive technology. */}
-          <button
-            type="button"
-            onClick={onFlipSpeaker}
-            disabled={status !== "recording"}
-            aria-live="assertive"
-            className="w-full flex flex-col items-center gap-1 bg-[#1c2128] border border-[rgba(0,212,220,0.25)] rounded-[8px] py-4 px-4 disabled:opacity-60 transition-all active:scale-[0.99]"
-          >
-            <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
-              Now speaking — press Space to flip
-            </span>
-            <span className="text-lg font-extrabold text-[#eef0f3]">{SPEAKER_LABEL[speaker]}</span>
-          </button>
 
           <div className="w-full grid grid-cols-2 gap-3">
             {status === "recording" ? (
