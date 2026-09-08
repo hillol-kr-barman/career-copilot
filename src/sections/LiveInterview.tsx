@@ -107,6 +107,11 @@ export const LiveInterview: React.FC = () => {
   // wake lock — the refusal never blocks or interrupts recording.
   const [wakeLockUnavailable, setWakeLockUnavailable] = useState(false);
 
+  // WR-01: records that the visitor dismissed the soft wake-lock warning, so
+  // a repeated failure does not keep re-raising it every time the tab regains
+  // visibility. Reset to false at the start of each new/resumed recording.
+  const wakeLockDismissedRef = useRef(false);
+
   // Silence watchdog: fifteen continuous seconds of near-silence on the tab
   // stream, after a five-second grace period, raises this — cleared
   // automatically once the level rises again. Never pauses or stops the
@@ -357,7 +362,15 @@ export const LiveInterview: React.FC = () => {
   useEffect(() => {
     if (!isActiveRecording) return;
     const remove = installWakeLockReacquire(
-      () => statusRef.current === "recording" || statusRef.current === "paused"
+      () => statusRef.current === "recording" || statusRef.current === "paused",
+      (gotLock) => {
+        if (gotLock) {
+          setWakeLockUnavailable(false);
+          wakeLockDismissedRef.current = false;
+        } else if (!wakeLockDismissedRef.current) {
+          setWakeLockUnavailable(true);
+        }
+      }
     );
     return remove;
   }, [isActiveRecording]);
@@ -577,6 +590,24 @@ export const LiveInterview: React.FC = () => {
     }
   };
 
+  /**
+   * Abandons a pending resume: nulls the resume seed as well as the flag that
+   * locks the role toggle, and reports whether a seed was actually pending
+   * when it was called. Clearing the seed is deliberate — unlocking the
+   * toggle while a seed is still pending would let the visitor flip roles and
+   * then have the next Begin apply recovered sequence numbers to the wrong
+   * physical stream, which is the exact mislabelling the lock exists to
+   * prevent (WR-02). The recovered session record itself is untouched and
+   * still carries status "recording", so the recovery prompt is offered
+   * again on the next page load.
+   */
+  const abandonPendingResume = (): boolean => {
+    const wasPending = resumeSeedRef.current !== null;
+    resumeSeedRef.current = null;
+    setIsResumingSession(false);
+    return wasPending;
+  };
+
   const handleAcceptConsent = () => {
     try {
       sessionStorage.setItem(CONSENT_SESSION_KEY, "1");
@@ -598,8 +629,13 @@ export const LiveInterview: React.FC = () => {
     try {
       mic = await acquireMic();
     } catch (err) {
+      const seedWasPending = abandonPendingResume();
       setStatus("idle");
-      setError(describeCaptureError(err, "mic"));
+      setError(
+        seedWasPending
+          ? `${describeCaptureError(err, "mic")} Your unfinished recording is still saved — reload the page to try recovering it again.`
+          : describeCaptureError(err, "mic")
+      );
       return;
     }
 
@@ -622,8 +658,13 @@ export const LiveInterview: React.FC = () => {
     } catch (err) {
       stopStream(mic);
       stopStream(tab);
+      const seedWasPending = abandonPendingResume();
       setStatus("idle");
-      setError(describeCaptureError(err, "display"));
+      setError(
+        seedWasPending
+          ? `${describeCaptureError(err, "display")} Your unfinished recording is still saved — reload the page to try recovering it again.`
+          : describeCaptureError(err, "display")
+      );
     }
   };
 
@@ -743,6 +784,7 @@ export const LiveInterview: React.FC = () => {
       // fail to start a recording (D-14).
       const gotLock = await acquireWakeLock();
       setWakeLockUnavailable(!gotLock);
+      wakeLockDismissedRef.current = false;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start recording.");
     }
@@ -901,7 +943,10 @@ export const LiveInterview: React.FC = () => {
       id: "wake-lock",
       message:
         "Your screen may sleep during a long call — keep this tab active and your device plugged in.",
-      onDismiss: () => setWakeLockUnavailable(false),
+      onDismiss: () => {
+        setWakeLockUnavailable(false);
+        wakeLockDismissedRef.current = true;
+      },
     });
   }
   if (tabSilent) {
@@ -934,7 +979,6 @@ export const LiveInterview: React.FC = () => {
           <CrashRecoveryPrompt
             session={recoveryInfo.session}
             capturedDurationMs={recoveryInfo.latestTsMs}
-            chunkCounts={recoveryInfo.chunkCounts}
             onResume={handleResumeRecovery}
             onDiscard={handleDiscardRecovery}
           />
@@ -999,7 +1043,7 @@ export const LiveInterview: React.FC = () => {
               onReshareTab={handleReshareTabAfterRevoke}
             />
 
-            {status === "stopped" && candidateSummary && interviewerSummary && (
+            {status === "stopped" && session && candidateSummary && interviewerSummary && (
               <RecordingDownloads
                 candidateSummary={candidateSummary}
                 interviewerSummary={interviewerSummary}
@@ -1007,6 +1051,7 @@ export const LiveInterview: React.FC = () => {
                 candidateUnreadableCount={candidateUnreadableCount}
                 interviewerUnreadableCount={interviewerUnreadableCount}
                 downloadingRoles={downloadingRoles}
+                mimeType={session.mimeType}
                 onDownload={handleDownloadStream}
               />
             )}
