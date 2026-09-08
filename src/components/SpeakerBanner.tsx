@@ -5,9 +5,6 @@ import type { Speaker } from "../types";
 export interface SpeakerBannerProps {
   /** Who the tag track currently attributes speech to. */
   speaker: Speaker;
-  /** The operator's own declared side (D-24) — lets the band mark which side
-   * is the operator's own. */
-  declaredSpeaker: Speaker;
   /** Flips the current speaker. The spacebar shortcut itself is installed by
    * the section component (LiveInterview.tsx); this only wires the click/tap
    * path so the affordance works without a keyboard. */
@@ -52,28 +49,23 @@ const SPEAKER_CLASSES: Record<Speaker, string> = {
  */
 export const SpeakerBanner: React.FC<SpeakerBannerProps> = ({
   speaker,
-  declaredSpeaker,
   onFlip,
   disabled,
 }) => {
   const Icon = SPEAKER_ICON[speaker];
-  const isSelf = speaker === declaredSpeaker;
 
   return (
     <button
       type="button"
       onClick={onFlip}
       disabled={disabled}
-      aria-label={`Now speaking: ${SPEAKER_LABEL[speaker]}${
-        isSelf ? " (you)" : ""
-      }. Press to mark the other side as speaking instead.`}
+      aria-label={`Now speaking: ${SPEAKER_LABEL[speaker]}. Press to mark the other side as speaking instead.`}
       className={`w-full flex flex-col items-center gap-1.5 rounded-[8px] border py-5 px-4 transition-all active:scale-[0.99] disabled:opacity-50 ${SPEAKER_CLASSES[speaker]}`}
     >
       <span className="flex items-center gap-2.5">
         <Icon className="w-7 h-7 shrink-0" aria-hidden="true" />
         <span className="text-2xl font-extrabold tracking-tight">
           {SPEAKER_LABEL[speaker]}
-          {isSelf && <span className="text-sm font-semibold opacity-70 ml-1.5">(you)</span>}
         </span>
       </span>
       <span className="text-[11px] font-semibold uppercase tracking-wider opacity-70">

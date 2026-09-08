@@ -713,7 +713,6 @@ export const LiveInterview: React.FC = () => {
             elapsedMs={elapsedMs}
             micMeterRef={micMeterRef}
             speaker={speaker}
-            declaredSpeaker={declaredSpeaker}
             onConnect={handleConnect}
             onBegin={handleBegin}
             onPause={handlePause}
