@@ -8,13 +8,12 @@ import {
   XCircle,
   AlertTriangle,
   Loader2,
-  MonitorOff,
   X,
 } from "lucide-react";
-import type { CaptureStatus, StreamRole } from "../types";
+import type { CaptureStatus, Speaker } from "../types";
 import type { LevelMeterHandle } from "../lib/levelMeter";
 
-/** A soft, non-blocking notice — wake-lock-unavailable or the silence watchdog. */
+/** A soft, non-blocking notice — currently only the wake-lock-unavailable warning. */
 export interface RecordingWarning {
   id: string;
   message: string;
@@ -60,81 +59,67 @@ const CHIP_ICON: Record<ChipState, React.ComponentType<{ className?: string }>> 
   waiting: Loader2,
 };
 
+const SPEAKER_LABEL: Record<Speaker, string> = {
+  candidate: "Candidate",
+  interviewer: "Interviewer",
+};
+
 export interface RecordingControlsProps {
   status: CaptureStatus;
   micStream: MediaStream | null;
-  tabStream: MediaStream | null;
-  micRole: StreamRole;
-  tabRole: StreamRole;
   elapsedMs: number;
-  tabAudioMissing: boolean;
-  acknowledgedSilentTab: boolean;
   micMeterRef: React.RefObject<LevelMeterHandle | null>;
-  tabMeterRef: React.RefObject<LevelMeterHandle | null>;
+  /** Who the tag track currently attributes speech to — flips on a spacebar press or a click here. */
+  speaker: Speaker;
   onConnect: () => void;
   onBegin: () => void;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
-  onReshare: () => void;
-  onAcknowledgeSilentTab: () => void;
+  /** Flips the current speaker — reachable by keyboard (Space) or by clicking/tapping this surface. */
+  onFlipSpeaker: () => void;
   /** Receives focus once the consent gate resolves (plan 04-02's focus-management contract). */
   connectButtonRef?: React.RefObject<HTMLButtonElement | null>;
-  /** Soft, non-blocking notices — wake-lock-unavailable and the silence watchdog. */
+  /** Soft, non-blocking notices — currently only the wake-lock-unavailable warning. */
   warnings: RecordingWarning[];
-  /** True once the tab track's native `ended` event has fired mid-recording (LIVE-07, D-15). */
-  shareRevoked: boolean;
-  /** Re-invokes the tab share from the revoked-share banner. */
-  onReshareTab: () => void;
 }
 
 /**
  * The capture state machine surface: connect/begin/pause/resume/stop CTAs,
- * the elapsed timer, the recording-state pill, and the two live level-meter
- * rows. Presentational only — it renders session state passed down from
- * `LiveInterview`, it does not own any of it. The level meters themselves are
- * created in `LiveInterview.tsx`; this component only reads them every
- * animation frame and draws the bar width.
+ * the elapsed timer, the recording-state pill, the one live level-meter row,
+ * and the current-speaker surface the spacebar flips. Presentational only —
+ * it renders session state passed down from `LiveInterview`, it does not own
+ * any of it. The level meter itself is created in `LiveInterview.tsx`; this
+ * component only reads it every animation frame and draws the bar width.
  */
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
   status,
   micStream,
-  tabStream,
-  micRole,
-  tabRole,
   elapsedMs,
-  tabAudioMissing,
-  acknowledgedSilentTab,
   micMeterRef,
-  tabMeterRef,
+  speaker,
   onConnect,
   onBegin,
   onPause,
   onResume,
   onStop,
-  onReshare,
-  onAcknowledgeSilentTab,
+  onFlipSpeaker,
   connectButtonRef,
   warnings,
-  shareRevoked,
-  onReshareTab,
 }) => {
   const [micLevel, setMicLevel] = useState<number | null>(null);
-  const [tabLevel, setTabLevel] = useState<number | null>(null);
   const rafRef = useRef<number | null>(null);
 
-  const streamsReady = Boolean(micStream && tabStream);
+  const streamReady = Boolean(micStream);
 
   useEffect(() => {
-    if (!streamsReady) {
+    if (!streamReady) {
       setMicLevel(null);
-      setTabLevel(null);
       return;
     }
 
     const tick = () => {
       setMicLevel(micMeterRef.current ? micMeterRef.current.read() : null);
-      setTabLevel(tabMeterRef.current ? tabMeterRef.current.read() : null);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -143,21 +128,18 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, [streamsReady, micMeterRef, tabMeterRef]);
+  }, [streamReady, micMeterRef]);
 
   const micTrackLive = micStream?.getAudioTracks()[0]?.readyState === "live";
-  const tabTrackLive = tabStream?.getAudioTracks()[0]?.readyState === "live";
   const micHasMeter = micMeterRef.current !== null;
-  const tabHasMeter = tabMeterRef.current !== null;
 
   // A track's own readyState always wins over the meter — a stream can end
-  // (revoked share, device unplugged) after its AnalyserNode was already
-  // created, and a meter reading a dead track's silence would otherwise
-  // stay "healthy" forever instead of ever surfacing the ended state.
-  // Backstop: if createLevelMeter returned null for a stream (T-04-13), the
-  // bar is dropped and the chip falls back to the track's live/ended state
-  // instead of RMS — a metering failure never blocks or misrepresents the
-  // recording.
+  // (device unplugged) after its AnalyserNode was already created, and a
+  // meter reading a dead track's silence would otherwise stay "healthy"
+  // forever instead of ever surfacing the ended state. Backstop: if
+  // createLevelMeter returned null for the stream (T-04-13), the bar is
+  // dropped and the chip falls back to the track's live/ended state instead
+  // of RMS — a metering failure never blocks or misrepresents the recording.
   const micChipState: ChipState = !micTrackLive
     ? "missing"
     : !micHasMeter
@@ -166,42 +148,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         ? "waiting"
         : "healthy";
 
-  const tabChipState: ChipState = tabAudioMissing
-    ? "missing"
-    : !tabTrackLive
-      ? "missing"
-      : !tabHasMeter
-        ? "healthy"
-        : tabLevel === null
-          ? "waiting"
-          : "healthy";
-
   // Only discrete health-state transitions are announced — never the
   // continuous level, which would be unusable noise announced every frame.
   const [announcement, setAnnouncement] = useState("");
   const prevMicStateRef = useRef<ChipState | null>(null);
-  const prevTabStateRef = useRef<ChipState | null>(null);
 
   useEffect(() => {
     if (prevMicStateRef.current !== null && prevMicStateRef.current !== micChipState) {
-      setAnnouncement(`${micRole} microphone: ${CHIP_LABEL[micChipState]}`);
+      setAnnouncement(`Microphone: ${CHIP_LABEL[micChipState]}`);
     }
     prevMicStateRef.current = micChipState;
-  }, [micChipState, micRole]);
+  }, [micChipState]);
 
-  useEffect(() => {
-    if (prevTabStateRef.current !== null && prevTabStateRef.current !== tabChipState) {
-      setAnnouncement(`${tabRole} tab audio: ${CHIP_LABEL[tabChipState]}`);
-    }
-    prevTabStateRef.current = tabChipState;
-  }, [tabChipState, tabRole]);
-
-  const showMeters =
-    streamsReady && (status === "armed" || status === "recording" || status === "paused");
+  const showMeter = streamReady && (status === "armed" || status === "recording" || status === "paused");
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Discrete stream-health announcer — never wraps the level bars themselves. */}
+      {/* Discrete stream-health announcer — never wraps the level bar itself. */}
       <span aria-live="polite" className="sr-only">
         {announcement}
       </span>
@@ -236,15 +199,15 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         <div className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold text-[#eef0f3]">No recording yet</h3>
           <p className="text-xs text-[#9aa3b0] leading-relaxed">
-            Record a remote interview as two clean audio tracks — one for you, one for the other
-            side. Nothing leaves this browser. Accept the notice below to begin.
+            Record both people in the room through one microphone. Nothing leaves this browser.
+            Accept the notice below to begin.
           </p>
           <button
             ref={connectButtonRef}
             onClick={onConnect}
             className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50 mt-2"
           >
-            <span>Connect microphone &amp; screen</span>
+            <span>Connect microphone</span>
           </button>
         </div>
       )}
@@ -255,96 +218,20 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] disabled:opacity-50"
         >
           <RefreshCw className="w-4 h-4 animate-spin" />
-          <span>Connecting to microphone and screen…</span>
+          <span>Connecting to microphone…</span>
         </button>
       )}
 
-      {showMeters && (
-        <div className="flex flex-col gap-4">
-          <MeterRow
-            roleLabel={micRole}
-            source="MIC"
-            state={micChipState}
-            level={micLevel}
-            hasMeter={micHasMeter}
-          />
-
-          {/* Sits directly above the interviewer meter row (LIVE-07) — the
-              one genuinely urgent unprompted interruption in this phase, so
-              it announces assertively and never auto-dismisses. The
-              candidate row above is unaffected and keeps updating, making
-              clear that only the interviewer stream stopped. */}
-          {shareRevoked && (
-            <div
-              aria-live="assertive"
-              className="flex items-start gap-2.5 bg-[#1c2128] border border-amber-500/20 rounded-[8px] p-4"
-            >
-              <div className="p-1.5 rounded-[6px] shrink-0 border bg-amber-500/10 border-amber-500/20 text-amber-400">
-                <MonitorOff className="w-4 h-4" />
-              </div>
-              <div className="flex flex-col gap-3 flex-1">
-                <p className="text-xs text-[#9aa3b0] leading-relaxed">
-                  Screen sharing was stopped — the interviewer's audio has stopped recording. Your
-                  microphone is still recording.
-                </p>
-                <button
-                  type="button"
-                  onClick={onReshareTab}
-                  className="self-start px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
-                >
-                  Share tab audio again
-                </button>
-              </div>
-            </div>
-          )}
-
-          <MeterRow
-            roleLabel={tabRole}
-            source="TAB AUDIO"
-            state={tabChipState}
-            level={tabLevel}
-            hasMeter={tabHasMeter}
-          />
-        </div>
-      )}
+      {showMeter && <MeterRow state={micChipState} level={micLevel} hasMeter={micHasMeter} />}
 
       {status === "armed" && (
-        <div className="flex flex-col gap-3">
-          {tabAudioMissing && !acknowledgedSilentTab && (
-            <div className="w-full flex items-start gap-2.5 text-xs text-red-500 bg-red-500/10 border border-red-500/15 rounded-[6px] px-4 py-4">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div className="flex flex-col gap-3 flex-1">
-                <span>
-                  You shared without ticking 'Share tab audio' — the interviewer's side won't be
-                  recorded. Click 'Share again' and make sure the audio checkbox is ticked before
-                  you confirm.
-                </span>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={onReshare}
-                    className="px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
-                  >
-                    Share again
-                  </button>
-                  <button
-                    onClick={onAcknowledgeSilentTab}
-                    className="px-3 py-1.5 rounded-[5px] border border-[rgba(255,255,255,0.07)] bg-transparent text-[#9aa3b0] hover:text-[#eef0f3] text-xs font-medium transition-all active:scale-95"
-                  >
-                    Record anyway (interviewer audio will be silent)
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-          <button
-            onClick={onBegin}
-            disabled={tabAudioMissing && !acknowledgedSilentTab}
-            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-          >
-            <Circle className="w-4 h-4" />
-            <span>Begin recording</span>
-          </button>
-        </div>
+        <button
+          onClick={onBegin}
+          className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+        >
+          <Circle className="w-4 h-4" />
+          <span>Begin recording</span>
+        </button>
       )}
 
       {(status === "recording" || status === "paused") && (
@@ -365,6 +252,25 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               </span>
             )}
           </div>
+
+          {/* Current-speaker surface (D-38 gives this its full-width banner
+              treatment in 04-12; here it must already be correct, accessible,
+              and change the instant a press lands). Reachable by keyboard via
+              Space during recording, and by click/tap here for anyone not at
+              the keyboard or using assistive technology. */}
+          <button
+            type="button"
+            onClick={onFlipSpeaker}
+            disabled={status !== "recording"}
+            aria-live="assertive"
+            className="w-full flex flex-col items-center gap-1 bg-[#1c2128] border border-[rgba(0,212,220,0.25)] rounded-[8px] py-4 px-4 disabled:opacity-60 transition-all active:scale-[0.99]"
+          >
+            <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
+              Now speaking — press Space to flip
+            </span>
+            <span className="text-lg font-extrabold text-[#eef0f3]">{SPEAKER_LABEL[speaker]}</span>
+          </button>
+
           <div className="w-full grid grid-cols-2 gap-3">
             {status === "recording" ? (
               <button
@@ -406,15 +312,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 };
 
 interface MeterRowProps {
-  roleLabel: StreamRole;
-  source: "MIC" | "TAB AUDIO";
   state: ChipState;
   level: number | null;
   hasMeter: boolean;
 }
 
-/** One stream row: role chip, status chip, level bar — the three always shown together. */
-const MeterRow: React.FC<MeterRowProps> = ({ roleLabel, source, state, level, hasMeter }) => {
+/** The one microphone row: status chip plus level bar, carrying both people's voices. */
+const MeterRow: React.FC<MeterRowProps> = ({ state, level, hasMeter }) => {
   const Icon = CHIP_ICON[state];
   const pct = hasMeter && level !== null ? Math.round(level * 100) : 0;
 
@@ -422,7 +326,7 @@ const MeterRow: React.FC<MeterRowProps> = ({ roleLabel, source, state, level, ha
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
-          {roleLabel.toUpperCase()} · {source}
+          ROOM MICROPHONE
         </span>
         <span
           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[4px] border text-[10px] font-semibold shrink-0 ${CHIP_CLASSES[state]}`}
@@ -437,7 +341,7 @@ const MeterRow: React.FC<MeterRowProps> = ({ roleLabel, source, state, level, ha
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={pct}
-          aria-label={`${roleLabel} audio level`}
+          aria-label="Microphone audio level"
           className="w-full bg-[#161a1e] h-2 rounded-full overflow-hidden"
         >
           <div

@@ -1,35 +1,34 @@
 import React from "react";
-import type { UserRole } from "../types";
+import type { Speaker } from "../types";
 
 interface RoleToggleProps {
-  role: UserRole;
-  onRoleChange: (role: UserRole) => void;
+  declaredSpeaker: Speaker;
+  onDeclaredSpeakerChange: (speaker: Speaker) => void;
   disabled: boolean;
 }
 
-/** Updates immediately on toggle — names which physical stream carries which label. */
-const HELPER_TEXT: Record<UserRole, string> = {
-  candidate:
-    "Your microphone will be labelled Candidate. The shared tab's audio will be labelled Interviewer.",
-  interviewer:
-    "Your microphone will be labelled Interviewer. The shared tab's audio will be labelled Candidate.",
-};
-
 /**
- * Single toggle deciding which captured stream is "candidate" and which is
- * "interviewer" (D-07). State lives in the parent — the section needs the
- * value to label both streams and to persist it on the session record.
+ * Single toggle where the operator declares which of the two sides they are,
+ * once, before recording (D-24). This is informational only now — there is
+ * one microphone track carrying both people, and nothing about it changes
+ * based on this declaration; it exists so downstream consumers (Phase 6's
+ * "what the candidate said" analysis) can read the operator's own side
+ * straight off the session record.
  *
  * Two independently-tabbable native buttons rather than a full ARIA
  * `radiogroup` with roving tabindex — the simpler, equally-accessible
  * pattern; Enter and Space operate them by default.
  *
  * Locked for the whole session once recording starts (Probe addition,
- * 2026-09-01): a mislabelled stream poisons the Phase 5 transcript and the
- * Phase 6 analysis, so nothing about who is at the laptop is allowed to
- * change mid-interview. It does not re-enable on stop.
+ * 2026-09-01): a wrong declaration poisons the Phase 5 transcript and the
+ * Phase 6 analysis, so nothing about who declared what is allowed to change
+ * mid-interview. It does not re-enable on stop.
  */
-export const RoleToggle: React.FC<RoleToggleProps> = ({ role, onRoleChange, disabled }) => {
+export const RoleToggle: React.FC<RoleToggleProps> = ({
+  declaredSpeaker,
+  onDeclaredSpeakerChange,
+  disabled,
+}) => {
   return (
     <div className="flex flex-col gap-2">
       <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
@@ -39,12 +38,12 @@ export const RoleToggle: React.FC<RoleToggleProps> = ({ role, onRoleChange, disa
       <div className="rounded-[6px] border border-[rgba(255,255,255,0.07)] overflow-hidden inline-flex w-fit">
         <button
           type="button"
-          aria-pressed={role === "candidate"}
+          aria-pressed={declaredSpeaker === "candidate"}
           aria-disabled={disabled}
           disabled={disabled}
-          onClick={() => onRoleChange("candidate")}
+          onClick={() => onDeclaredSpeakerChange("candidate")}
           className={`px-4 py-2.5 text-sm transition-all disabled:opacity-50 ${
-            role === "candidate"
+            declaredSpeaker === "candidate"
               ? "bg-[#00d4dc] text-[#0a0c0d] font-semibold"
               : "bg-[#1c2128] text-[#9aa3b0] hover:text-[#eef0f3]"
           }`}
@@ -53,12 +52,12 @@ export const RoleToggle: React.FC<RoleToggleProps> = ({ role, onRoleChange, disa
         </button>
         <button
           type="button"
-          aria-pressed={role === "interviewer"}
+          aria-pressed={declaredSpeaker === "interviewer"}
           aria-disabled={disabled}
           disabled={disabled}
-          onClick={() => onRoleChange("interviewer")}
+          onClick={() => onDeclaredSpeakerChange("interviewer")}
           className={`px-4 py-2.5 text-sm transition-all disabled:opacity-50 ${
-            role === "interviewer"
+            declaredSpeaker === "interviewer"
               ? "bg-[#00d4dc] text-[#0a0c0d] font-semibold"
               : "bg-[#1c2128] text-[#9aa3b0] hover:text-[#eef0f3]"
           }`}
@@ -67,16 +66,19 @@ export const RoleToggle: React.FC<RoleToggleProps> = ({ role, onRoleChange, disa
         </button>
       </div>
 
-      <p className="text-xs text-[#9aa3b0] leading-relaxed">{HELPER_TEXT[role]}</p>
+      <p className="text-xs text-[#9aa3b0] leading-relaxed">
+        This is recorded once, before you start — it doesn't change which audio is captured. One
+        microphone records both of you; the spacebar marks who is currently speaking.
+      </p>
 
       <p className="text-xs text-[#6b7685] leading-relaxed">
-        A panel of interviewers shares the one tab track under this single Interviewer label —
+        A panel of interviewers shares the one Interviewer side of the spacebar toggle —
         per-panellist controls aren't available yet.
       </p>
 
       {disabled && (
         <p className="text-xs text-[#6b7685] leading-relaxed">
-          Locked while recording — the role is set for the whole session.
+          Locked while recording — set for the whole session.
         </p>
       )}
     </div>

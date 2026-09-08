@@ -77,29 +77,25 @@ export interface ProviderInfo {
 }
 
 /**
- * Which physical audio source a recorder is attached to. This is a routing
- * label, never an identity — the mic track is whoever is at this laptop, the
- * tab track is whoever is on the call (D-06).
+ * Which of the two people in the room a moment of audio or a tag press
+ * belongs to (D-24). Replaces the retired `StreamRole`/`UserRole` split,
+ * which existed only to express the retired mic-versus-tab mapping.
  */
-export type StreamRole = "candidate" | "interviewer";
-
-/** The visitor's own role in this interview — the single toggle from D-07. */
-export type UserRole = "candidate" | "interviewer";
+export type Speaker = "candidate" | "interviewer";
 
 /** Lifecycle of a Tool 4 capture session, from idle through stopped. */
 export type CaptureStatus = "idle" | "connecting" | "armed" | "recording" | "paused" | "stopped";
 
 /**
- * One `sessions` IndexedDB record. `clockOrigin` is the shared
- * `performance.now()` origin both recorders' chunk timestamps are measured
- * from — this, not `startedAt`, is what lets Phase 5 merge the two streams
- * by time (D-03).
+ * One `sessions` IndexedDB record. `clockOrigin` is the `performance.now()`
+ * origin the tag track and the audio share — every chunk's `tsMs` and every
+ * tag press's `tsMs` are measured from this one instant (D-22).
  */
 export interface RecordingSession {
   sessionId: string;
   startedAt: number;
   clockOrigin: number;
-  userRole: UserRole;
+  declaredSpeaker: Speaker;
   mimeType: string;
   status: "recording" | "stopped";
   durationMs: number;
@@ -108,7 +104,6 @@ export interface RecordingSession {
 /** Metadata for one recorded chunk, without its payload. */
 export interface AudioChunkMeta {
   sessionId: string;
-  streamRole: StreamRole;
   seq: number;
   tsMs: number;
   size: number;
@@ -120,11 +115,34 @@ export interface AudioChunkRecord extends AudioChunkMeta {
   blob: Blob;
 }
 
-/** Aggregate stats for one stream's stored chunks, for the download surface. */
-export interface StreamSummary {
-  role: StreamRole;
+/** Aggregate stats for a session's stored chunks, for the download surface. */
+export interface RecordingSummary {
   chunkCount: number;
   readableCount: number;
   totalBytes: number;
   durationMs: number;
+}
+
+/** One persisted spacebar press (D-27) — a fact about who started speaking, at what audio-elapsed offset. */
+export interface TagPress {
+  sessionId: string;
+  tsMs: number;
+  speaker: Speaker;
+}
+
+/** One derived contiguous speaker span (D-26) — the unit `deriveSpans` emits. */
+export interface TagSpan {
+  startMs: number;
+  endMs: number;
+  speaker: Speaker;
+}
+
+/** The D-30 JSON sidecar shape a take's tag track downloads as. */
+export interface TagTrackSidecar {
+  sessionId: string;
+  mimeType: string;
+  clockOrigin: number;
+  startedAt: number;
+  declaredSpeaker: Speaker;
+  spans: TagSpan[];
 }
