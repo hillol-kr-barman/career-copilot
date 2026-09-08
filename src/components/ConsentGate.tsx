@@ -15,10 +15,14 @@ const OTHER_SIDE: Record<Speaker, string> = {
   interviewer: "the candidate",
 };
 
-/** The operator's own side, named plainly rather than "you". */
+/**
+ * The operator's own side, named by role only. The tool serves candidates and
+ * interviewers alike, so the notice names both people by what they are rather
+ * than marking one of them as "you".
+ */
 const SELF_SIDE: Record<Speaker, string> = {
-  candidate: "the candidate (you)",
-  interviewer: "the interviewer (you)",
+  candidate: "the candidate",
+  interviewer: "the interviewer",
 };
 
 /**
