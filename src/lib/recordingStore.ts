@@ -676,7 +676,7 @@ export const findResumableSession = async (): Promise<ResumableSessionInfo | nul
     }
 
     let chunkCount = 0;
-    let latestTsMs = 0;
+    const rawChunks: unknown[] = [];
 
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(CHUNKS_STORE, "readonly");
@@ -688,13 +688,14 @@ export const findResumableSession = async (): Promise<ResumableSessionInfo | nul
           resolve();
           return;
         }
-        const chunk = cursor.value as AudioChunkRecord;
         chunkCount++;
-        if (chunk.tsMs > latestTsMs) latestTsMs = chunk.tsMs;
+        rawChunks.push(cursor.value);
         cursor.continue();
       };
       req.onerror = () => reject(req.error);
     });
+
+    const latestTsMs = recoveredEndMs(rawChunks as { tsMs: unknown }[]);
 
     db.close();
 
