@@ -22,6 +22,20 @@ export interface RecordingWarning {
   onDismiss?: () => void;
 }
 
+/**
+ * LIVE-05: a standing fact about recording, not a condition that has arisen
+ * — rendered as a quiet persistent line during an active take, never folded
+ * into the dismissible `warnings` array above. Names both consequences of
+ * the same cause (an unfocused/hidden window) because they share one remedy:
+ * a hidden tab drops the screen wake lock (D-14), and a window that has lost
+ * OS focus stops delivering keyboard events at all, so the spacebar tag
+ * track (D-23) goes silent too. The second half is a browser/OS boundary no
+ * client code can work around (LIVE-27, 04-RESEARCH.md Pattern 5) — saying
+ * it plainly, once, is the whole mitigation.
+ */
+export const TAB_FOCUS_ADVISORY =
+  "Keep this tab visible and this window focused while recording. A hidden tab loses the screen wake lock, and an unfocused window won't receive spacebar presses — the speaker mark will be missed.";
+
 const formatElapsed = (ms: number): string => {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -270,6 +284,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             onFlip={onFlipSpeaker}
             disabled={status !== "recording"}
           />
+
+          {/* Quiet and persistent, not a warning: this is a standing fact
+              about recording, never a dismissible notice about something
+              that has already gone wrong (contrast the `warnings` block
+              above, which only ever names conditions that have arisen). */}
+          <p className="text-[11px] text-[#6b7685] text-center leading-relaxed -mt-1">{TAB_FOCUS_ADVISORY}</p>
 
           <div className="w-full bg-[#1c2128] border border-[rgba(255,255,255,0.07)] p-5 rounded-[8px] flex flex-col items-center justify-center gap-2">
             <span className="text-4xl font-extrabold font-mono text-[#eef0f3] tracking-tight">

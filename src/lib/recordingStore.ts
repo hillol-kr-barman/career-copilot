@@ -7,7 +7,6 @@ import type {
   TagPress,
   TagSpan,
 } from "../types";
-import { TIMESLICE_MS } from "./recorder";
 
 /**
  * Every chunk is written as its own IndexedDB record rather than appended
@@ -89,14 +88,28 @@ export function openRecordingDB(options?: { autoCloseOnVersionChange?: boolean }
   });
 }
 
-/** Writes a new `RecordingSession` record with status `"recording"`. */
+/**
+ * Writes a new `RecordingSession` record with status `"recording"`.
+ *
+ * Uses `durability: "strict"` (WINDOWS #2): this store's default ("relaxed")
+ * durability lets the browser report a transaction complete before the write
+ * is actually flushed to the on-disk backing store, trading a small amount
+ * of latency for throughput. That trade is the right one for a chunk written
+ * every five seconds (D-13 already accepts losing the final one), but it is
+ * the wrong one for the one record `findResumableSession` depends on to
+ * recover anything at all — a session row that is merely "complete" in the
+ * renderer but not yet durable can vanish together with every chunk written
+ * after it, which reads as a recovered take that "never existed" rather than
+ * one that lost its final few seconds. This write happens once per take, so
+ * the added latency costs nothing worth trading away.
+ */
 export async function createSession(
   db: IDBDatabase,
   session: Omit<RecordingSession, "status" | "durationMs">
 ): Promise<RecordingSession> {
   const record: RecordingSession = { ...session, status: "recording", durationMs: 0, sizeBytes: 0 };
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(SESSIONS_STORE, "readwrite");
+    const tx = db.transaction(SESSIONS_STORE, "readwrite", { durability: "strict" });
     tx.objectStore(SESSIONS_STORE).put(record);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
@@ -138,7 +151,12 @@ export async function appendChunk(db: IDBDatabase, meta: AudioChunkMeta, blob: B
  */
 export async function appendTagPress(db: IDBDatabase, press: TagPress): Promise<void> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(TAGS_STORE, "readwrite");
+    // durability: "strict" (WINDOWS #2's reasoning applies here too, at a
+    // much lower cost): a press happens on human timescales, not every five
+    // seconds, and a lost last-speaker press misattributes a whole recovered
+    // or resumed span (T-04-15-02) rather than costing a few seconds of tail
+    // audio the way a lost chunk does.
+    const tx = db.transaction(TAGS_STORE, "readwrite", { durability: "strict" });
     tx.objectStore(TAGS_STORE).put(press);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error || new Error("Failed to save a tag press."));
@@ -199,9 +217,21 @@ export async function listTagPresses(sessionId: string): Promise<TagPress[]> {
  * adjacent spans carrying the same speaker are merged, so the emitted list
  * is always strictly increasing and still partitions the recording end to
  * end.
+ *
+ * A press at or after `finalAudioElapsedMs` is dropped before pairing, not
+ * after (04-15, D-29): for a clean stop the boundary is read after the last
+ * possible press, so this can never trigger; for a recovered take, the
+ * boundary is the last chunk that reached disk, and a press can land in the
+ * moments after it. Filtering *before* pairing is what matters — pairing
+ * first and only dropping the resulting zero/negative-length span would
+ * still leave the *previous* span's `endMs` sitting at that out-of-range
+ * press's timestamp, which is exactly the "span points past the end of the
+ * file" outcome D-29 forbids.
  */
 export function deriveSpans(presses: TagPress[], finalAudioElapsedMs: number): TagSpan[] {
-  const sorted = [...presses].sort((a, b) => a.tsMs - b.tsMs);
+  const sorted = [...presses]
+    .filter((press) => press.tsMs < finalAudioElapsedMs)
+    .sort((a, b) => a.tsMs - b.tsMs);
   const raw: TagSpan[] = [];
   let cursor = 0;
   let current: Speaker = "interviewer";
@@ -225,14 +255,19 @@ export function deriveSpans(presses: TagPress[], finalAudioElapsedMs: number): T
   return spans;
 }
 
-/** Marks a session stopped with its final duration. */
+/**
+ * Marks a session stopped with its final duration. `durability: "strict"`
+ * for the same reason `createSession` uses it — this is the write that
+ * moves a take out of `findResumableSession`'s "still recording" filter, and
+ * it happens once per take.
+ */
 export async function markSessionStopped(
   db: IDBDatabase,
   sessionId: string,
   durationMs: number
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(SESSIONS_STORE, "readwrite");
+    const tx = db.transaction(SESSIONS_STORE, "readwrite", { durability: "strict" });
     const store = tx.objectStore(SESSIONS_STORE);
     const getReq = store.get(sessionId);
     getReq.onsuccess = () => {
@@ -292,13 +327,42 @@ export async function listChunks(db: IDBDatabase, sessionId: string): Promise<Au
 }
 
 /**
+ * The D-29 closing boundary, as a function: the largest readable chunk
+ * timestamp in the list, or 0 for an empty or entirely-unreadable list. Pure
+ * and order-independent — touches no storage and no browser API — so both
+ * the resumable-session read and `closeRecoveredSession` below can share one
+ * definition of "where a take ends" with `scripts/check-tag-track.ts`
+ * asserting it directly. A chunk whose `tsMs` is not a number is ignored
+ * rather than poisoning the result (a defensive read of storage, mirroring
+ * this module's other degrade-on-bad-input rules) — the field being absent
+ * or malformed says nothing about the chunk's real position, so it must not
+ * silently become 0 and win a `Math.max`-style comparison it has no claim to.
+ */
+export function recoveredEndMs(chunks: { tsMs: unknown }[]): number {
+  let maxTsMs = 0;
+  for (const chunk of chunks) {
+    if (typeof chunk.tsMs === "number" && chunk.tsMs > maxTsMs) maxTsMs = chunk.tsMs;
+  }
+  return maxTsMs;
+}
+
+/**
  * Aggregates a session's readable chunk metadata into the shape the download
  * surface needs: the total chunk count found in storage, how many of those
  * were actually readable, the summed byte size of the readable chunks, and a
- * duration derived from the latest readable chunk's `tsMs` plus one
- * timeslice (a chunk's timestamp marks when it was delivered, not the span
- * it covers, so the true end of the recording is one timeslice later). Pure
- * — touches no storage and no browser API — so Phase 7's test suite can
+ * duration equal to `recoveredEndMs` of those same chunks.
+ *
+ * This used to add one `TIMESLICE_MS` on top of the latest chunk's `tsMs`,
+ * reasoning that a chunk's timestamp marks when it was *delivered* rather
+ * than the span it covers, and that the recording therefore truly ends a
+ * timeslice later. That reasoning was wrong: a chunk delivered at a given
+ * instant carries the audio *up to* that instant — the recording's real end
+ * is that instant, not five seconds past it. The practical consequence is
+ * that this function now reports the exact same number D-29 closes a
+ * recovered tag track's final span at, which is the point — a take can no
+ * longer have two different "ends" depending on which half of it you ask.
+ *
+ * Pure — touches no storage and no browser API — so Phase 7's test suite can
  * exercise the counting and ordering logic without an IndexedDB fixture.
  */
 export const summariseChunks = (
@@ -306,16 +370,14 @@ export const summariseChunks = (
   totalChunkCount: number
 ): RecordingSummary => {
   let totalBytes = 0;
-  let maxTsMs = 0;
   for (const chunk of readableChunks) {
     totalBytes += chunk.size;
-    if (chunk.tsMs > maxTsMs) maxTsMs = chunk.tsMs;
   }
   return {
     chunkCount: totalChunkCount,
     readableCount: readableChunks.length,
     totalBytes,
-    durationMs: readableChunks.length > 0 ? maxTsMs + TIMESLICE_MS : 0,
+    durationMs: recoveredEndMs(readableChunks),
   };
 };
 
@@ -493,6 +555,17 @@ export interface ResumableSessionInfo {
   session: RecordingSession;
   chunkCount: number;
   latestTsMs: number;
+  /** How many speaker marks were recovered for this session (04-15). */
+  pressCount: number;
+  /**
+   * Who was marked when the crash happened, from the last recovered press —
+   * `null` when no press was ever made, meaning the take is still on D-25's
+   * opening default (the interviewer) rather than an unreadable log. Reading
+   * this through `listTagPresses` means a corrupt press log degrades to
+   * `pressCount: 0, lastSpeaker: null` rather than failing the recovery of
+   * the audio, which is the independent, more important half of the take.
+   */
+  lastSpeaker: Speaker | null;
 }
 
 /**
@@ -624,11 +697,69 @@ export const findResumableSession = async (): Promise<ResumableSessionInfo | nul
     });
 
     db.close();
-    return { session: newest, chunkCount, latestTsMs };
+
+    // Reads through the same validating, degrade-to-empty tag-press reader
+    // every other caller uses — an unreadable press log must cost only the
+    // speaker marks, never the audio recovery this function exists for.
+    const presses = await listTagPresses(newest.sessionId);
+    const pressCount = presses.length;
+    const lastSpeaker: Speaker | null = pressCount > 0 ? presses[pressCount - 1].speaker : null;
+
+    return { session: newest, chunkCount, latestTsMs, pressCount, lastSpeaker };
   } catch {
     return null;
   }
 };
+
+/**
+ * The "keep what was captured" recovery action (D-29, T-04-15-04): marks a
+ * crashed take stopped at its own last durable chunk without resuming it,
+ * so the audio does not have to be continued to be kept. Reads the
+ * session's own chunk records for the closing boundary (`recoveredEndMs`)
+ * and byte total, then writes both through the exact read-modify-write shape
+ * a clean stop uses (`markSessionStopped` then `updateSessionSize`), so a
+ * recovered take that is closed this way is indistinguishable in storage
+ * from one that was stopped normally at that same instant.
+ *
+ * Resolves — never rejects — on any storage failure, returning 0: the
+ * recovery prompt needs an honest "nothing was saved" it can act on, not a
+ * promise that never settles and leaves the prompt stuck open.
+ */
+export async function closeRecoveredSession(sessionId: string): Promise<number> {
+  try {
+    const db = await openRecordingDB();
+    const rawChunks = await new Promise<unknown[]>((resolve, reject) => {
+      const tx = db.transaction(CHUNKS_STORE, "readonly");
+      const index = tx.objectStore(CHUNKS_STORE).index(BY_SESSION_INDEX);
+      const results: unknown[] = [];
+      const req = index.openCursor(IDBKeyRange.only(sessionId));
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) {
+          resolve(results);
+          return;
+        }
+        results.push(cursor.value);
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+
+    const closingMs = recoveredEndMs(rawChunks as { tsMs: unknown }[]);
+    let totalBytes = 0;
+    for (const raw of rawChunks) {
+      const size = (raw as { size?: unknown } | undefined)?.size;
+      if (typeof size === "number") totalBytes += size;
+    }
+
+    await markSessionStopped(db, sessionId, closingMs);
+    await updateSessionSize(db, sessionId, totalBytes);
+    db.close();
+    return closingMs;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Deletes one session record and all of its chunks and tag presses, using
