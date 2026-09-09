@@ -414,6 +414,14 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       const tag = (active?.tagName ?? "").toUpperCase();
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (active instanceof HTMLElement && active.isContentEditable) return;
+      // WR-02: a focused <button> (Pause/Resume/Stop in RecordingControls,
+      // or the SpeakerBanner itself) already activates on Space per native
+      // browser behavior. Preempting that here would swallow the button's
+      // own activation. Bailing costs nothing for SpeakerBanner specifically
+      // — it is itself a <button type="button" onClick={onFlip}>, so letting
+      // the browser's native Space-activation fire its click still flips the
+      // speaker; only the flip's origin changes, not whether it happens.
+      if (tag === "BUTTON" || (active instanceof HTMLElement && active.getAttribute("role") === "button")) return;
       e.preventDefault();
       flipSpeaker();
     };
