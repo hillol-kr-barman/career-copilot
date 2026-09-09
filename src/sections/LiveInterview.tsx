@@ -40,7 +40,7 @@ import {
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob, downloadJson } from "../lib/download";
-import type { CaptureStatus, RecordingSession, RecordingSummary, Speaker, TagTrackSidecar } from "../types";
+import type { CaptureStatus, RecordingSession, Speaker, TagTrackSidecar } from "../types";
 import type { RecordingWarning } from "../components/RecordingControls";
 
 /** Copy from the UI-SPEC Copywriting Contract — a recovered session whose
@@ -140,11 +140,6 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   // visibility. Reset to false at the start of each new/resumed recording.
   const wakeLockDismissedRef = useRef(false);
 
-  // LIVE-08 download surface: the one stream's summary and unreadable-chunk
-  // count, derived once via assembleSessionBlob at the moment the session
-  // stops.
-  const [summary, setSummary] = useState<RecordingSummary | null>(null);
-  const [unreadableCount, setUnreadableCount] = useState(0);
   // Keyed by `${sessionId}:audio` / `${sessionId}:sidecar` so an audio
   // download and a sidecar download of the same take never block each
   // other, and a second press of the same button is still ignored.
@@ -308,7 +303,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     setRecoveryError("");
     setDeletingIds({});
     setDownloading({});
-    // The completion line (session/summary/elapsedMs) describes a specific
+    // The completion line (session/elapsedMs) describes a specific
     // stopped take, kept only for RecordingControls' stopped-state text
     // (see findTake's doc comment) — it must not go on describing a take
     // that storage no longer holds. Left alone while a recording is still
@@ -316,8 +311,6 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     // in the first place, so status can never be "stopped" here anyway.
     if (status === "stopped") {
       setSession(null);
-      setSummary(null);
-      setUnreadableCount(0);
       setElapsedMs(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -622,11 +615,6 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     if (!micStream) return;
     setError("");
 
-    // Fresh recording (or a resumed one continuing forward): the download
-    // surface's per-session state must not leak from a previous recording.
-    setSummary(null);
-    setUnreadableCount(0);
-
     // A resumed session reuses its recovered mimeType rather than
     // re-negotiating one — mixing mimeTypes within one assembled download
     // would risk a codec mismatch the player can't reconcile.
@@ -844,13 +832,11 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       // reload to re-run its mount-time probe (see LiveInterviewProps doc).
       onRecordingStored?.();
 
-      // Derives the completion line's summary now that the session has
+      // Derives the finished take's byte total now that the session has
       // stopped (LIVE-08) — separate from a download click's own full blob
       // assembly. The download surface itself no longer reads this; it reads
       // the refetched take list below (D-31).
       const result = await assembleSessionBlob(session.sessionId, session.mimeType);
-      setSummary(result.summary);
-      setUnreadableCount(result.unreadableCount);
 
       // Records the finished take's total byte size once, so listing N takes
       // never reads N takes' worth of blobs, then refetches the list so the
@@ -947,7 +933,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
    * Deletes one take and refetches the list (D-32). Guarded against a second
    * concurrent press for the same take id — a concurrent delete of a
    * different take is unaffected. If the deleted take is also the one the
-   * completion line (`session`/`summary`/`elapsedMs`, kept for
+   * completion line (`session`/`elapsedMs`, kept for
    * `RecordingControls`'s stopped-state text) refers to, that state is
    * cleared too, so nothing on screen still describes a take that no longer
    * exists.
@@ -961,8 +947,6 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       setStoppedTakes(takes);
       if (session?.sessionId === sessionId) {
         setSession(null);
-        setSummary(null);
-        setUnreadableCount(0);
         setElapsedMs(0);
       }
     } finally {
