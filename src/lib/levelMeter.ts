@@ -74,21 +74,13 @@ export function createLevelMeter(stream: MediaStream): LevelMeterHandle | null {
   }
 }
 
-/** RMS level below which a stream is treated as near-silent (the silence watchdog threshold). */
-export const NEAR_SILENCE_RMS = 0.01;
-
-/** Grace period after recording starts before the silence watchdog can arm. */
-export const SILENCE_GRACE_MS = 5000;
-
-/** Continuous near-silence duration on the tab stream that raises the silence-watchdog notice. */
-export const SILENCE_WATCHDOG_MS = 15000;
-
 /**
  * The RMS level the D-37 pre-flight treats as "loud enough to transcribe".
  * A starting point, not a measured threshold (A3, LOW confidence, see
- * 04-RESEARCH.md) — three times `NEAR_SILENCE_RMS`, which is a silence
- * threshold and not an audibility one. Kept in one place so it can be
- * revised once real peak numbers exist.
+ * 04-RESEARCH.md) — three times 0.01, the near-silence threshold this was
+ * originally derived from, which is a silence threshold and not an
+ * audibility one. Kept in one place so it can be revised once real peak
+ * numbers exist.
  */
 export const PREFLIGHT_FLOOR_RMS = 0.03;
 
