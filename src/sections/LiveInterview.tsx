@@ -53,6 +53,19 @@ interface LiveInterviewProps {
    * (0 === 0), so it only fires on a real clear, never on initial render.
    */
   clearedAt?: number;
+  /**
+   * The mirror image of `clearedAt` (LIVE-09 follow-up): App.tsx's
+   * `hasRecordings` — which gates whether "Clear stored data" is even
+   * clickable — is set only once on mount (a direct `hasStoredRecordings()`
+   * probe) and once inside the clear handler itself. Nothing told it a *new*
+   * take had been written mid-session, so the first clear correctly emptied
+   * everything and disabled the button, and it stayed disabled forever after
+   * — even once a fresh take existed on disk — until a reload re-ran the
+   * mount probe. Fired the moment a take is durably marked stopped, the
+   * earliest point at which "a recording exists" is a fact App.tsx can trust
+   * without re-opening the database itself.
+   */
+  onRecordingStored?: () => void;
 }
 
 /**
@@ -62,7 +75,7 @@ interface LiveInterviewProps {
  * (D-13). Audio never leaves this browser: nothing this section touches
  * makes a network call.
  */
-export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0 }) => {
+export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onRecordingStored }) => {
   const [status, setStatus] = useState<CaptureStatus>("idle");
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [session, setSession] = useState<RecordingSession | null>(null);
@@ -656,6 +669,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0 }) =
 
       await markSessionStopped(db, session.sessionId, finalDuration);
       setSession({ ...session, status: "stopped", durationMs: finalDuration });
+      // LIVE-09 follow-up: this take is now durably on disk — tell App.tsx
+      // so "Clear stored data" re-enables itself without waiting for a
+      // reload to re-run its mount-time probe (see LiveInterviewProps doc).
+      onRecordingStored?.();
 
       // Derives the completion line's summary now that the session has
       // stopped (LIVE-08) — separate from a download click's own full blob

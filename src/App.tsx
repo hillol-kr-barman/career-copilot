@@ -42,6 +42,14 @@ export default function App() {
   const [providerInfo, setProviderInfo] = useState<ProviderInfo | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState("");
+  // Set from the one-time mount probe below, from LiveInterview's
+  // onRecordingStored the moment a new take is durably written (LIVE-09
+  // follow-up — the mirror of clearedAt below), and to false by
+  // handleClearStoredData once a delete actually confirms the database is
+  // gone. Without the onRecordingStored write, this stayed false forever
+  // after the first successful clear — nothing else ever set it back to
+  // true — silently disabling "Clear stored data" for every take recorded
+  // afterward until the next full reload re-ran the mount probe.
   const [hasRecordings, setHasRecordings] = useState(false);
   // LIVE-09: bumped only once a clear has actually emptied the recordings
   // database, so LiveInterview's take list (D-31) can drop its own stale
@@ -250,7 +258,7 @@ export default function App() {
 
         <InterviewPrep context={context} apiKey={apiKey} />
 
-        <LiveInterview clearedAt={clearedAt} />
+        <LiveInterview clearedAt={clearedAt} onRecordingStored={() => setHasRecordings(true)} />
 
         <StoredDataNotice
           hasResume={Boolean(context.resumeText.trim())}
