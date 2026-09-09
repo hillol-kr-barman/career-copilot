@@ -67,6 +67,8 @@ export interface RecordingControlsProps {
   micMeterRef: React.RefObject<LevelMeterHandle | null>;
   /** Who the tag track currently attributes speech to — flips on a spacebar press or a click here. */
   speaker: Speaker;
+  /** D-37's per-side pre-flight cleared flags — informs the readiness line above Begin; never blocks it. */
+  preflightCleared: Record<Speaker, boolean>;
   onConnect: () => void;
   onBegin: () => void;
   onPause: () => void;
@@ -94,6 +96,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   elapsedMs,
   micMeterRef,
   speaker,
+  preflightCleared,
   onConnect,
   onBegin,
   onPause,
@@ -170,6 +173,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
   const showMeter = streamReady && (status === "armed" || status === "recording" || status === "paused");
 
+  // D-37: informs, never blocks — Begin stays enabled in every case below.
+  // A warning about the room is not a permission.
+  const preflightReadinessLine = preflightCleared.interviewer && preflightCleared.candidate
+    ? "Pre-flight: both sides cleared."
+    : preflightCleared.interviewer || preflightCleared.candidate
+      ? `Pre-flight: ${preflightCleared.interviewer ? SPEAKER_LABEL.candidate : SPEAKER_LABEL.interviewer} hasn't cleared yet.`
+      : "Pre-flight: not checked yet.";
+
   return (
     <div className="flex flex-col gap-4">
       {/* Discrete stream-health announcer — never wraps the level bar itself. */}
@@ -233,13 +244,16 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       {showMeter && <MeterRow state={micChipState} level={micLevel} hasMeter={micHasMeter} />}
 
       {status === "armed" && (
-        <button
-          onClick={onBegin}
-          className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
-        >
-          <Circle className="w-4 h-4" />
-          <span>Begin recording</span>
-        </button>
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-[#9aa3b0] text-center leading-relaxed">{preflightReadinessLine}</p>
+          <button
+            onClick={onBegin}
+            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+          >
+            <Circle className="w-4 h-4" />
+            <span>Begin recording</span>
+          </button>
+        </div>
       )}
 
       {(status === "recording" || status === "paused") && (
