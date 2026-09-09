@@ -637,6 +637,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       }
     }
 
+    let sessionId: string | null = null;
+
     try {
       // Opts out of the auto-close-on-versionchange every other connection
       // gets (see openRecordingDB) — this is the one handle this app
@@ -649,7 +651,18 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       // used to leave this connection referenced by nothing, open forever
       // with no path left to close it (D-12).
       dbRef.current = db;
-      const sessionId = resumeSeed?.sessionId ?? crypto.randomUUID();
+
+      // Mirrors handleConnect's unmount guard (WR-01): openRecordingDB is
+      // the first await in this function, so the section may already have
+      // unmounted by the time it resolves. Bail before wiring anything else
+      // to a stream/db the unmount cleanup effect has already torn down.
+      if (cancelledRef.current) {
+        db.close();
+        dbRef.current = null;
+        return;
+      }
+
+      sessionId = resumeSeed?.sessionId ?? crypto.randomUUID();
       const seedSeq = resumeSeed?.seedSeq ?? 0;
       const tsOffsetMs = resumeSeed?.tsOffsetMs ?? 0;
 
@@ -674,6 +687,18 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
         declaredSpeaker,
         mimeType,
       });
+
+      // Second unmount guard (WR-01): createSession is a second await gap,
+      // and by now it has durably written a "recording" session row with
+      // zero chunks. If the section unmounted while that write was in
+      // flight, the row must not be left behind — it would otherwise
+      // survive to falsely trigger the crash-recovery prompt on next load.
+      if (cancelledRef.current) {
+        await deleteSession(sessionId);
+        db.close();
+        dbRef.current = null;
+        return;
+      }
 
       const handle = startRecorder(micStream, mimeType, clock, (meta, blob) => {
         const adjusted = { ...meta, sessionId, seq: meta.seq + seedSeq };
@@ -710,6 +735,13 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       // reference to close either one.
       recorderHandleRef.current?.stopAll().catch(() => {});
       recorderHandleRef.current = null;
+      // WR-01: if createSession already durably wrote a "recording" row
+      // before startRecorder threw, that row must not survive this failed
+      // attempt — left behind, it falsely triggers the crash-recovery
+      // prompt on the next load for what was actually a normal failure.
+      if (dbRef.current && sessionId) {
+        await deleteSession(sessionId);
+      }
       dbRef.current?.close();
       dbRef.current = null;
       setError(err instanceof Error ? err.message : "Could not start recording.");
