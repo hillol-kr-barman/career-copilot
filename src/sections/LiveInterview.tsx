@@ -6,13 +6,16 @@ import { RoleToggle } from "../components/RoleToggle";
 import { RecordingControls } from "../components/RecordingControls";
 import { CrashRecoveryPrompt } from "../components/CrashRecoveryPrompt";
 import { RecordingDownloads } from "../components/RecordingDownloads";
+import { MicSetup } from "../components/MicSetup";
 import {
   acquireMic,
   stopStream,
   describeCaptureError,
+  listAudioInputs,
   CAPTURE_UNSUPPORTED_REASON,
   UNSUPPORTED_FORMAT_REASON,
 } from "../lib/audioCapture";
+import type { AudioInputDevice } from "../lib/audioCapture";
 import { pickSupportedMimeType, startRecorder, audioElapsedMs, isRecordingFormatSupported } from "../lib/recorder";
 import type { RecorderHandle } from "../lib/recorder";
 import { createLevelMeter } from "../lib/levelMeter";
@@ -88,6 +91,16 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   // write, no ref, nothing that outlives the take it was given for.
   const [hasConsented, setHasConsented] = useState(false);
   const [declaredSpeaker, setDeclaredSpeaker] = useState<Speaker>("candidate");
+
+  // D-36: the operator's chosen input device. `undefined` means the system
+  // default and is never persisted — deviceIds rotate per origin and a
+  // stale one buys nothing on first use. inputDevices is refreshed once
+  // permission is granted (see the micStream effect below); micFellBack
+  // mirrors acquireMic's usedFallback so a silent substitution is never
+  // possible (D-36).
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
+  const [inputDevices, setInputDevices] = useState<AudioInputDevice[]>([]);
+  const [micFellBackToDefault, setMicFellBackToDefault] = useState(false);
 
   // D-25: the opening span belongs to the interviewer, so the current-speaker
   // surface (and the spacebar's first flip) starts there for every take.
@@ -335,6 +348,21 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     };
   }, [micStream]);
 
+  // D-36: the device list is only meaningful once permission has been
+  // granted — before that every label the browser returns is blank. Runs
+  // whenever micStream changes (a fresh connect or a device switch), which
+  // is exactly when permission is known to be live.
+  useEffect(() => {
+    if (!micStream) return;
+    let cancelled = false;
+    listAudioInputs().then((devices) => {
+      if (!cancelled) setInputDevices(devices);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [micStream]);
+
   // Browsers auto-release the wake lock whenever the tab is hidden (D-14) —
   // re-request it whenever the tab regains visibility while a recording
   // (recording or paused) is still active. Installed only for the lifetime
@@ -470,9 +498,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   const handleConnect = async () => {
     setError("");
     setStatus("connecting");
+    setMicFellBackToDefault(false);
 
     try {
-      const mic = await acquireMic();
+      const { stream: mic, usedFallback } = await acquireMic(selectedDeviceId);
 
       if (cancelledRef.current) {
         stopStream(mic);
@@ -480,6 +509,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       }
 
       setMicStream(mic);
+      setMicFellBackToDefault(usedFallback);
       setStatus("armed");
     } catch (err) {
       const seedWasPending = abandonPendingResume();
@@ -492,6 +522,42 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
           ? `${describeCaptureError(err)} Your unfinished recording is still saved — reload the page to try recovering it again.`
           : describeCaptureError(err)
       );
+    }
+  };
+
+  /**
+   * D-36: re-acquires the microphone with the newly chosen device while the
+   * tool is armed but not yet recording — the control is disabled entirely
+   * during an active recording (see MicSetup's `disabled` prop), so this
+   * path is never reachable mid-take. The previous stream is stopped before
+   * the new request so no microphone is ever left open across the switch;
+   * `acquireMic` itself handles a disappeared device by falling back to the
+   * system default and reporting it, never substituting silently.
+   */
+  const handleSelectDevice = async (deviceId: string | undefined) => {
+    setSelectedDeviceId(deviceId);
+    if (status !== "armed") return;
+
+    setError("");
+    const previousStream = micStream;
+    stopStream(previousStream);
+
+    try {
+      const { stream: mic, usedFallback } = await acquireMic(deviceId);
+      if (cancelledRef.current) {
+        stopStream(mic);
+        return;
+      }
+      setMicStream(mic);
+      setMicFellBackToDefault(usedFallback);
+    } catch (err) {
+      // The old stream is already stopped and the new request failed —
+      // there is no live microphone left to arm with, so fall all the way
+      // back to idle rather than leaving the armed UI pointing at nothing.
+      setMicStream(null);
+      setStatus("idle");
+      setHasConsented(false);
+      setError(describeCaptureError(err));
     }
   };
 
@@ -868,21 +934,34 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
         {!hasConsented ? (
           <ConsentGate onAccept={handleAcceptConsent} declaredSpeaker={declaredSpeaker} />
         ) : (
-          <RecordingControls
-            status={status}
-            micStream={micStream}
-            elapsedMs={elapsedMs}
-            micMeterRef={micMeterRef}
-            speaker={speaker}
-            onConnect={handleConnect}
-            onBegin={handleBegin}
-            onPause={handlePause}
-            onResume={handleResume}
-            onStop={handleStop}
-            onFlipSpeaker={flipSpeaker}
-            connectButtonRef={connectButtonRef}
-            warnings={warnings}
-          />
+          <>
+            {/* D-36: only meaningful once permission is granted and a stream
+                exists — before Connect there is nothing to list or switch. */}
+            {micStream && (
+              <MicSetup
+                devices={inputDevices}
+                selectedDeviceId={selectedDeviceId}
+                onSelectDevice={handleSelectDevice}
+                fellBackToDefault={micFellBackToDefault}
+                disabled={status === "recording" || status === "paused"}
+              />
+            )}
+            <RecordingControls
+              status={status}
+              micStream={micStream}
+              elapsedMs={elapsedMs}
+              micMeterRef={micMeterRef}
+              speaker={speaker}
+              onConnect={handleConnect}
+              onBegin={handleBegin}
+              onPause={handlePause}
+              onResume={handleResume}
+              onStop={handleStop}
+              onFlipSpeaker={flipSpeaker}
+              connectButtonRef={connectButtonRef}
+              warnings={warnings}
+            />
+          </>
         )}
 
         {/* D-31: every stopped take, newest-first — a sibling of the consent
