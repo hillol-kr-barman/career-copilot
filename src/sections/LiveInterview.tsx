@@ -44,6 +44,17 @@ import type { RecordingWarning } from "../components/RecordingControls";
 const RECOVERY_FAILED_COPY =
   "This recording couldn't be recovered — the saved data may be corrupted or incomplete. It has been discarded automatically.";
 
+interface LiveInterviewProps {
+  /**
+   * Bumped by App.tsx's "Clear stored data" handler the moment
+   * `deleteRecordingDB` actually confirms the database is gone (LIVE-09) —
+   * never on a `"blocked"`/`"incomplete"` outcome, since the data (and this
+   * list) genuinely is still there in that case. A no-op on first mount
+   * (0 === 0), so it only fires on a real clear, never on initial render.
+   */
+  clearedAt?: number;
+}
+
 /**
  * Tool 4 — records both people in the room through one in-room microphone
  * (D-21), a spacebar toggle marks who is speaking into a timestamped tag
@@ -51,7 +62,7 @@ const RECOVERY_FAILED_COPY =
  * (D-13). Audio never leaves this browser: nothing this section touches
  * makes a network call.
  */
-export const LiveInterview: React.FC = () => {
+export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0 }) => {
   const [status, setStatus] = useState<CaptureStatus>("idle");
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [session, setSession] = useState<RecordingSession | null>(null);
@@ -239,6 +250,37 @@ export const LiveInterview: React.FC = () => {
       cancelled = true;
     };
   }, []);
+
+  // LIVE-09: the take list (and anything else naming a take) must not go
+  // stale the moment "Clear stored data" actually empties the database —
+  // without this, stoppedTakes kept rendering takes that no longer existed
+  // on disk until the page was reloaded and the mount-time scan above ran
+  // again. clearedAtRef starts equal to the prop's initial value, so this
+  // never fires on mount — only on a real, later bump from App.tsx, which
+  // only happens once deleteRecordingDB has confirmed the database is gone.
+  const clearedAtRef = useRef(clearedAt);
+  useEffect(() => {
+    if (clearedAt === clearedAtRef.current) return;
+    clearedAtRef.current = clearedAt;
+    setStoppedTakes([]);
+    setRecoveryInfo(null);
+    setRecoveryError("");
+    setDeletingIds({});
+    setDownloading({});
+    // The completion line (session/summary/elapsedMs) describes a specific
+    // stopped take, kept only for RecordingControls' stopped-state text
+    // (see findTake's doc comment) — it must not go on describing a take
+    // that storage no longer holds. Left alone while a recording is still
+    // active: that take's own data is what kept the delete from completing
+    // in the first place, so status can never be "stopped" here anyway.
+    if (status === "stopped") {
+      setSession(null);
+      setSummary(null);
+      setUnreadableCount(0);
+      setElapsedMs(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearedAt]);
 
   // A wall-clock timer independent of chunk delivery — dataavailable/
   // timeslice timing is not exact enough to double as an elapsed clock
@@ -468,7 +510,17 @@ export const LiveInterview: React.FC = () => {
     }
 
     try {
-      const db = await openRecordingDB();
+      // Opts out of the auto-close-on-versionchange every other connection
+      // gets (see openRecordingDB) — this is the one handle this app
+      // deliberately keeps open across awaits, and auto-closing it the
+      // instant "Clear stored data" is clicked would silently cut off a
+      // live take's storage mid-recording.
+      const db = await openRecordingDB({ autoCloseOnVersionChange: false });
+      // Tracked immediately, not after the awaited createSession below
+      // (LIVE-09): a rejection between here and the old assignment point
+      // used to leave this connection referenced by nothing, open forever
+      // with no path left to close it (D-12).
+      dbRef.current = db;
       const sessionId = resumeSeed?.sessionId ?? crypto.randomUUID();
       const seedSeq = resumeSeed?.seedSeq ?? 0;
       const tsOffsetMs = resumeSeed?.tsOffsetMs ?? 0;
@@ -484,6 +536,10 @@ export const LiveInterview: React.FC = () => {
           setError(chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk.");
         });
       });
+      // Same reasoning as dbRef.current above: tracked the moment it exists
+      // so a later failure's catch can still stop it rather than leaving a
+      // MediaRecorder running with no session behind it.
+      recorderHandleRef.current = handle;
 
       const newSession = await createSession(db, {
         sessionId,
@@ -493,8 +549,6 @@ export const LiveInterview: React.FC = () => {
         mimeType,
       });
 
-      dbRef.current = db;
-      recorderHandleRef.current = handle;
       resumeSeedRef.current = null;
       setIsResumingSession(false);
       setSession(newSession);
@@ -508,6 +562,13 @@ export const LiveInterview: React.FC = () => {
       setWakeLockUnavailable(!gotLock);
       wakeLockDismissedRef.current = false;
     } catch (err) {
+      // Neither the connection nor the recorder may outlive a failed Begin
+      // (D-12, CR-01) — after this catch returns, nothing else holds a
+      // reference to close either one.
+      recorderHandleRef.current?.stopAll().catch(() => {});
+      recorderHandleRef.current = null;
+      dbRef.current?.close();
+      dbRef.current = null;
       setError(err instanceof Error ? err.message : "Could not start recording.");
     }
   };

@@ -43,6 +43,11 @@ export default function App() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState("");
   const [hasRecordings, setHasRecordings] = useState(false);
+  // LIVE-09: bumped only once a clear has actually emptied the recordings
+  // database, so LiveInterview's take list (D-31) can drop its own stale
+  // reads of it without a full page reload. Never bumped on an "incomplete"
+  // outcome — the data (and that list) genuinely is still there then.
+  const [clearedAt, setClearedAt] = useState(0);
 
   // Keep the session on disk so a refresh doesn't cost the user their resume.
   useEffect(() => {
@@ -140,6 +145,12 @@ export default function App() {
     // rather than assuming the delete took (LIVE-09).
     const stillPresent = deleteOutcome === "deleted" ? false : await hasStoredRecordings();
     setHasRecordings(stillPresent);
+    if (!stillPresent) {
+      // Tells LiveInterview's take list the database is actually gone, so
+      // it empties immediately instead of rendering takes that no longer
+      // exist until the next full reload (LIVE-09).
+      setClearedAt(Date.now());
+    }
     // The localStorage side genuinely was cleared even when the database
     // was not — this reset always runs, in both outcomes.
     setContext(EMPTY_CONTEXT);
@@ -239,7 +250,7 @@ export default function App() {
 
         <InterviewPrep context={context} apiKey={apiKey} />
 
-        <LiveInterview />
+        <LiveInterview clearedAt={clearedAt} />
 
         <StoredDataNotice
           hasResume={Boolean(context.resumeText.trim())}

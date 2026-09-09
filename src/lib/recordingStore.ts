@@ -35,7 +35,30 @@ const CHUNKS_STORE = "chunks";
 const TAGS_STORE = "tags";
 const BY_SESSION_INDEX = "bySession";
 
-export function openRecordingDB(): Promise<IDBDatabase> {
+/**
+ * Every connection this app opens, except the one call site that opts out.
+ * `deleteDatabase()` (D-12) dispatches a `versionchange` event to every open
+ * connection that hasn't already closed; a connection that never reacts to it
+ * leaves the delete request queued behind `onblocked` until this tab reloads
+ * and the browser tears every connection down for it — which is exactly the
+ * "Clear stored data works, but only after a reload" defect (LIVE-09). The
+ * short-lived helper connections below (`listStoppedSessions`,
+ * `hasStoredRecordings`, `assembleSessionBlob`, etc.) already close
+ * themselves the moment their one read or write finishes, but any of them
+ * that failed to reach that `close()` call on some untraced error path stays
+ * open indefinitely with nothing left holding a reference to close it later
+ * — this handler is what still lets `deleteDatabase()` get past it.
+ *
+ * `handleBegin` in `LiveInterview` opts out (`autoCloseOnVersionChange:
+ * false`) for the one connection this app *deliberately* keeps open across
+ * awaits — the active recording's own handle. Auto-closing that one on any
+ * `versionchange` would silently cut off a live take's storage mid-recording
+ * the moment "Clear stored data" is clicked, rather than the honest
+ * `"blocked"` outcome `deleteRecordingDB` reports while a take is genuinely
+ * still in progress.
+ */
+export function openRecordingDB(options?: { autoCloseOnVersionChange?: boolean }): Promise<IDBDatabase> {
+  const autoCloseOnVersionChange = options?.autoCloseOnVersionChange ?? true;
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (event) => {
@@ -55,7 +78,13 @@ export function openRecordingDB(): Promise<IDBDatabase> {
         tagStore.createIndex(BY_SESSION_INDEX, "sessionId");
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      if (autoCloseOnVersionChange) {
+        db.onversionchange = () => db.close();
+      }
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -390,24 +419,42 @@ export const assembleSessionBlob = async (
  * `DeleteRecordingDBOutcome` tells the caller what actually happened; this
  * function does not decide what the visitor is told, the caller does:
  * - `"deleted"`: the database is actually gone.
- * - `"blocked"`: another connection (this tab or another) is still open, so
- *   the deletion is queued behind it and has NOT happened yet — the request
- *   never reaches `onsuccess` until that connection closes. Reporting this as
- *   a success would tell the visitor their data is gone when it is still on
- *   disk.
+ * - `"blocked"`: a connection is still open past the grace window below, so
+ *   the deletion has NOT happened — reporting this as a success would tell
+ *   the visitor their data is gone when it is still on disk.
  * - `"error"`: logged via `console.error` so the failure is visible in
  *   DevTools without surfacing it to the visitor.
+ *
+ * `onblocked` firing is not itself the final word (LIVE-09): every
+ * connection this app opens except the active-recording handle self-closes
+ * the instant it receives the `versionchange` event this delete request just
+ * dispatched (see `openRecordingDB`), so `onsuccess` almost always follows
+ * `onblocked` within a tick or two. Resolving on the first `onblocked` — as
+ * this used to — reported "blocked" for a delete that was, in every
+ * observed case, seconds away from actually completing on its own. The
+ * 1500ms grace window below is what lets that `onsuccess` still win; only a
+ * connection that genuinely never closes (an active recording still writing,
+ * or another tab running stale code with no `versionchange` handler) falls
+ * through to the honest `"blocked"` outcome.
  */
 export type DeleteRecordingDBOutcome = "deleted" | "blocked" | "error";
 
 export function deleteRecordingDB(): Promise<DeleteRecordingDBOutcome> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (outcome: DeleteRecordingDBOutcome) => {
+      if (settled) return;
+      settled = true;
+      resolve(outcome);
+    };
     const req = indexedDB.deleteDatabase(DB_NAME);
-    req.onsuccess = () => resolve("deleted");
-    req.onblocked = () => resolve("blocked");
+    req.onsuccess = () => finish("deleted");
     req.onerror = () => {
       console.error("Failed to delete the recordings database.", req.error);
-      resolve("error");
+      finish("error");
+    };
+    req.onblocked = () => {
+      window.setTimeout(() => finish("blocked"), 1500);
     };
   });
 }
