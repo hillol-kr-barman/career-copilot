@@ -11,9 +11,9 @@
  * calling `performance.now()`.
  */
 import assert from "node:assert/strict";
-import { deriveSpans } from "../src/lib/recordingStore";
+import { deriveSpans, sortTakesNewestFirst, normaliseSessionRecord } from "../src/lib/recordingStore";
 import { audioElapsedMs } from "../src/lib/recorder";
-import type { TagPress } from "../src/types";
+import type { TagPress, RecordingSession } from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
 // Asserted algebraically: with clockOrigin === performance.now() at call time
@@ -109,5 +109,79 @@ import type { TagPress } from "../src/types";
 // deriveSpans' contract above (listTagPresses itself requires a live
 // IndexedDB and cannot run under Node) — deriveSpans is what this script can
 // assert without a browser.
+
+const baseSession: RecordingSession = {
+  sessionId: "base",
+  startedAt: 1000,
+  clockOrigin: 0,
+  declaredSpeaker: "interviewer",
+  mimeType: "audio/webm",
+  status: "stopped",
+  durationMs: 5000,
+  sizeBytes: 100,
+};
+
+// sortTakesNewestFirst orders sessions by startedAt descending.
+{
+  const older: RecordingSession = { ...baseSession, sessionId: "a", startedAt: 1000 };
+  const newer: RecordingSession = { ...baseSession, sessionId: "b", startedAt: 2000 };
+  const sorted = sortTakesNewestFirst([older, newer]);
+  assert.deepEqual(sorted.map((s) => s.sessionId), ["b", "a"], "newest startedAt must sort first");
+}
+
+// sortTakesNewestFirst is stable for two sessions sharing the same startedAt.
+{
+  const first: RecordingSession = { ...baseSession, sessionId: "first", startedAt: 1000 };
+  const second: RecordingSession = { ...baseSession, sessionId: "second", startedAt: 1000 };
+  const sorted = sortTakesNewestFirst([first, second]);
+  assert.deepEqual(
+    sorted.map((s) => s.sessionId),
+    ["first", "second"],
+    "equal startedAt must preserve input order (stable sort)"
+  );
+}
+
+// sortTakesNewestFirst does not mutate the array passed to it.
+{
+  const a: RecordingSession = { ...baseSession, sessionId: "a", startedAt: 1000 };
+  const b: RecordingSession = { ...baseSession, sessionId: "b", startedAt: 2000 };
+  const original = [a, b];
+  const originalOrder = original.map((s) => s.sessionId);
+  sortTakesNewestFirst(original);
+  assert.deepEqual(original.map((s) => s.sessionId), originalOrder, "input array must not be mutated");
+}
+
+// normaliseSessionRecord defaults sizeBytes to 0 when the field is absent.
+{
+  const raw = {
+    sessionId: "s1",
+    startedAt: 1000,
+    clockOrigin: 0,
+    declaredSpeaker: "candidate",
+    mimeType: "audio/webm",
+    status: "stopped",
+    durationMs: 5000,
+  };
+  const normalised = normaliseSessionRecord(raw);
+  assert.ok(normalised, "a record with no sizeBytes field must still normalise");
+  assert.equal(normalised?.sizeBytes, 0);
+}
+
+// normaliseSessionRecord defaults sizeBytes to 0 when present but not a number.
+{
+  const raw = {
+    sessionId: "s1",
+    startedAt: 1000,
+    clockOrigin: 0,
+    declaredSpeaker: "candidate",
+    mimeType: "audio/webm",
+    status: "stopped",
+    durationMs: 5000,
+    sizeBytes: "not-a-number",
+  };
+  const normalised = normaliseSessionRecord(raw);
+  assert.ok(normalised, "a record with a non-number sizeBytes must still normalise");
+  assert.equal(normalised?.sizeBytes, 0);
+}
 
 console.log("check-tag-track: all assertions passed");

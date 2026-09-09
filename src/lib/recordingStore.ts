@@ -65,7 +65,7 @@ export async function createSession(
   db: IDBDatabase,
   session: Omit<RecordingSession, "status" | "durationMs">
 ): Promise<RecordingSession> {
-  const record: RecordingSession = { ...session, status: "recording", durationMs: 0 };
+  const record: RecordingSession = { ...session, status: "recording", durationMs: 0, sizeBytes: 0 };
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(SESSIONS_STORE, "readwrite");
     tx.objectStore(SESSIONS_STORE).put(record);
@@ -209,6 +209,28 @@ export async function markSessionStopped(
     getReq.onsuccess = () => {
       const existing = getReq.result as RecordingSession | undefined;
       if (existing) store.put({ ...existing, status: "stopped", durationMs });
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Records a finished take's total byte size, once, after `markSessionStopped`
+ * has already fired. Deliberately not folded into `markSessionStopped` — that
+ * call fires before the blob assembly so a crash immediately after Stop still
+ * finds the take marked stopped, and delaying it until the byte total is
+ * known would give that guarantee up. Uses the same read-modify-write shape
+ * `markSessionStopped` uses.
+ */
+export async function updateSessionSize(db: IDBDatabase, sessionId: string, sizeBytes: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SESSIONS_STORE, "readwrite");
+    const store = tx.objectStore(SESSIONS_STORE);
+    const getReq = store.get(sessionId);
+    getReq.onsuccess = () => {
+      const existing = getReq.result as RecordingSession | undefined;
+      if (existing) store.put({ ...existing, sizeBytes });
     };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
@@ -433,8 +455,12 @@ export interface ResumableSessionInfo {
  * A `declaredSpeaker` that is present but not one of the two known values is
  * normalised to `"candidate"` rather than treated as invalid, since the
  * field itself is present and trustworthy enough to keep the record.
+ *
+ * Exported so `scripts/check-tag-track.ts` can exercise its `sizeBytes`
+ * defaulting rules directly — a validation rule that cannot be exercised is
+ * a validation rule nobody maintains.
  */
-const normaliseSessionRecord = (value: unknown): RecordingSession | null => {
+export const normaliseSessionRecord = (value: unknown): RecordingSession | null => {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   if (typeof record.sessionId !== "string" || record.sessionId.length === 0) return null;
@@ -446,6 +472,7 @@ const normaliseSessionRecord = (value: unknown): RecordingSession | null => {
   const startedAt = typeof record.startedAt === "number" ? record.startedAt : 0;
   const status = record.status === "stopped" ? "stopped" : "recording";
   const durationMs = typeof record.durationMs === "number" ? record.durationMs : 0;
+  const sizeBytes = typeof record.sizeBytes === "number" ? record.sizeBytes : 0;
 
   return {
     sessionId: record.sessionId,
@@ -455,8 +482,47 @@ const normaliseSessionRecord = (value: unknown): RecordingSession | null => {
     mimeType: record.mimeType,
     status,
     durationMs,
+    sizeBytes,
   };
 };
+
+/**
+ * Orders sessions by `startedAt` descending — newest take first. Pure and
+ * non-mutating (sorts a shallow copy), and stable for two sessions sharing a
+ * `startedAt` (JS `Array.prototype.sort` is spec-guaranteed stable). Exported
+ * so `scripts/check-tag-track.ts` can exercise the ordering rule without
+ * storage, and so `listStoppedSessions` and any future caller share one
+ * ordering definition.
+ */
+export function sortTakesNewestFirst(sessions: RecordingSession[]): RecordingSession[] {
+  return [...sessions].sort((a, b) => b.startedAt - a.startedAt);
+}
+
+/**
+ * Every stopped take, newest-first — the primary read path for the download
+ * surface (D-31: the take, not the recording, is the noun the UI is built
+ * around). Degrades to an empty array on any failure, matching every other
+ * read path in this file.
+ */
+export async function listStoppedSessions(): Promise<RecordingSession[]> {
+  try {
+    const db = await openRecordingDB();
+    const rawSessions = await new Promise<unknown[]>((resolve, reject) => {
+      const tx = db.transaction(SESSIONS_STORE, "readonly");
+      const req = tx.objectStore(SESSIONS_STORE).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+
+    const stopped = rawSessions
+      .map(normaliseSessionRecord)
+      .filter((s): s is RecordingSession => s !== null && s.status === "stopped");
+    return sortTakesNewestFirst(stopped);
+  } catch {
+    return [];
+  }
+}
 
 /**
  * The newest session still marked `"recording"` — left over from a crash or
@@ -550,27 +616,39 @@ const deleteSessionAndChunks = (db: IDBDatabase, sessionId: string): Promise<voi
   });
 
 /**
- * Deletes every unfinished session except `keepSessionId`, together with all
- * of its chunks (via the `bySession` index). Storage can hold several
- * unfinished sessions — crash twice and there are two — and an interview
- * abandoned two sessions ago is almost certainly dead, so only the newest is
- * ever offered and the rest are removed in the same operation. Resolves —
+ * Deletes every OTHER session still marked `"recording"` except
+ * `keepSessionId`, together with all of its chunks and tag presses (via the
+ * `bySession` index). Storage can hold several unfinished sessions — crash
+ * twice and there are two — and an interview abandoned two sessions ago is
+ * almost certainly dead, so only the newest unfinished session is ever
+ * offered and the rest are removed in the same operation.
+ *
+ * A stopped take is NEVER a candidate for deletion here (D-31): this
+ * function reads full session records and normalises them rather than bare
+ * keys, specifically so it can filter on status before deleting anything.
+ * The earlier version of this function deleted every session except the one
+ * kept, with no status filter — on a crash-recovery mount that destroyed
+ * every previously stopped take on the very next page load. Resolves —
  * never rejects — on any failure; a storage fault here just leaves a stale
- * session behind rather than blocking the recovery flow.
+ * unfinished session behind rather than blocking the recovery flow.
  */
 export const pruneOlderSessions = async (keepSessionId: string): Promise<void> => {
   try {
     const db = await openRecordingDB();
-    const allIds = await new Promise<IDBValidKey[]>((resolve, reject) => {
+    const rawSessions = await new Promise<unknown[]>((resolve, reject) => {
       const tx = db.transaction(SESSIONS_STORE, "readonly");
-      const req = tx.objectStore(SESSIONS_STORE).getAllKeys();
+      const req = tx.objectStore(SESSIONS_STORE).getAll();
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
 
-    for (const id of allIds) {
-      if (id === keepSessionId) continue;
-      await deleteSessionAndChunks(db, String(id));
+    const staleRecordingIds = rawSessions
+      .map(normaliseSessionRecord)
+      .filter((s): s is RecordingSession => s !== null && s.status === "recording" && s.sessionId !== keepSessionId)
+      .map((s) => s.sessionId);
+
+    for (const id of staleRecordingIds) {
+      await deleteSessionAndChunks(db, id);
     }
     db.close();
   } catch {

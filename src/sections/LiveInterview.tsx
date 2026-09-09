@@ -31,6 +31,8 @@ import {
   pruneOlderSessions,
   deleteSession,
   nextSeqFor,
+  listStoppedSessions,
+  updateSessionSize,
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob, downloadJson } from "../lib/download";
@@ -99,6 +101,17 @@ export const LiveInterview: React.FC = () => {
   // download and a sidecar download of the same take never block each
   // other, and a second press of the same button is still ignored.
   const [downloading, setDownloading] = useState<Record<string, boolean>>({});
+
+  // D-31/LIVE-08: every stopped take, newest-first — the primary read path
+  // for the download surface. Refetched on mount (after the crash-recovery
+  // scan resolves), after every stop, and after every delete. Deliberately
+  // separate from `session` (the take currently being recorded, if any):
+  // one is live state, the other is a list of finished work.
+  const [stoppedTakes, setStoppedTakes] = useState<RecordingSession[]>([]);
+  // Keyed by sessionId — guards a second concurrent delete press on the
+  // same take (D-32: a delete must never remove more than the one take it
+  // names, and must never fire twice for it).
+  const [deletingIds, setDeletingIds] = useState<Record<string, boolean>>({});
 
   // The real remaining capability constraint after the in-room pivot —
   // computed once, it does not change over the component's lifetime.
@@ -217,6 +230,9 @@ export const LiveInterview: React.FC = () => {
         if (cancelled) return;
         setRecoveryInfo(found);
       }
+      const takes = await listStoppedSessions();
+      if (cancelled) return;
+      setStoppedTakes(takes);
       setRecoveryScanning(false);
     })();
     return () => {
@@ -376,7 +392,23 @@ export const LiveInterview: React.FC = () => {
     return wasPending;
   };
 
+  /**
+   * LIVE-28: consent already resets at stop (D-34), so accepting it again is
+   * the natural return to idle — no separate "record another" control is
+   * needed. When accepted from the stopped state, this also clears the
+   * finished take's live-state pointer (the take itself stays in
+   * `stoppedTakes`, untouched) and resets the marked speaker back to the
+   * D-25 default so the next take doesn't open on the previous take's last
+   * press. `declaredSpeaker` is deliberately left alone — it describes the
+   * operator, who hasn't changed.
+   */
   const handleAcceptConsent = () => {
+    if (status === "stopped") {
+      setStatus("idle");
+      setSession(null);
+      setElapsedMs(0);
+      setSpeaker("interviewer");
+    }
     setHasConsented(true);
   };
 
@@ -564,12 +596,20 @@ export const LiveInterview: React.FC = () => {
       await markSessionStopped(db, session.sessionId, finalDuration);
       setSession({ ...session, status: "stopped", durationMs: finalDuration });
 
-      // Derives the download surface's summary now that the session has
+      // Derives the completion line's summary now that the session has
       // stopped (LIVE-08) — separate from a download click's own full blob
-      // assembly.
+      // assembly. The download surface itself no longer reads this; it reads
+      // the refetched take list below (D-31).
       const result = await assembleSessionBlob(session.sessionId, session.mimeType);
       setSummary(result.summary);
       setUnreadableCount(result.unreadableCount);
+
+      // Records the finished take's total byte size once, so listing N takes
+      // never reads N takes' worth of blobs, then refetches the list so the
+      // take that just finished appears in it (D-31, LIVE-08).
+      await updateSessionSize(db, session.sessionId, result.summary.totalBytes);
+      const takes = await listStoppedSessions();
+      setStoppedTakes(takes);
     } catch (err) {
       // Hardware and status are already released by this point (the
       // transition above runs before the awaited write, and teardownCapture
@@ -582,21 +622,35 @@ export const LiveInterview: React.FC = () => {
   };
 
   /**
-   * Re-assembles the session's audio blob from storage and hands it to the
+   * Finds one take's own record by id — from the refetched list, or from the
+   * live `session` pointer for the moment right after Stop, before the list
+   * refetch has resolved. Every download and delete needs a specific take's
+   * own `mimeType`/`durationMs`/etc., not whichever take is currently being
+   * recorded (D-31: several takes can be downloaded, and each pair must use
+   * its own take's fields).
+   */
+  const findTake = (sessionId: string): RecordingSession | null =>
+    stoppedTakes.find((t) => t.sessionId === sessionId) ?? (session?.sessionId === sessionId ? session : null);
+
+  /**
+   * Re-assembles one take's audio blob from storage and hands it to the
    * visitor (LIVE-08). Deliberately separate from the summary assembly in
-   * handleStop — that call discards its blob once the summary is read, so a
-   * stopped session's download surface doesn't hold a full recording in
-   * memory before the visitor has asked for it. Guarded against a second
-   * concurrent press of the same button; a concurrent sidecar download is
-   * unaffected (each is keyed independently).
+   * handleStop — that call discards its blob once the summary is read, so
+   * the download surface doesn't hold a full recording in memory before the
+   * visitor has asked for it. Guarded against a second concurrent press of
+   * the same button; a concurrent sidecar download, or a download of a
+   * different take, is unaffected (each is keyed independently by
+   * `${sessionId}:audio`/`${sessionId}:sidecar`).
    */
   const handleDownloadAudio = async (sessionId: string, filename: string) => {
     const key = `${sessionId}:audio`;
-    if (!session || downloading[key]) return;
+    if (downloading[key]) return;
+    const take = findTake(sessionId);
+    if (!take) return;
     setError("");
     setDownloading((prev) => ({ ...prev, [key]: true }));
     try {
-      const result = await assembleSessionBlob(sessionId, session.mimeType);
+      const result = await assembleSessionBlob(sessionId, take.mimeType);
       if (result.blob) {
         downloadBlob(filename, result.blob);
       } else {
@@ -610,25 +664,27 @@ export const LiveInterview: React.FC = () => {
   };
 
   /**
-   * Reads the session's tag presses, derives spans against the session's
-   * stored `durationMs` (D-29's boundary), and hands the result to
-   * `downloadJson` as a `TagTrackSidecar` (D-30). Keyed independently of the
-   * audio download so the two never block each other.
+   * Reads one take's tag presses, derives spans against that take's stored
+   * `durationMs` (D-29's boundary), and hands the result to `downloadJson`
+   * as a `TagTrackSidecar` (D-30). Keyed independently of the audio download
+   * so the two never block each other.
    */
   const handleDownloadSidecar = async (sessionId: string, filename: string) => {
     const key = `${sessionId}:sidecar`;
-    if (!session || downloading[key]) return;
+    if (downloading[key]) return;
+    const take = findTake(sessionId);
+    if (!take) return;
     setError("");
     setDownloading((prev) => ({ ...prev, [key]: true }));
     try {
       const presses = await listTagPresses(sessionId);
-      const spans = deriveSpans(presses, session.durationMs);
+      const spans = deriveSpans(presses, take.durationMs);
       const sidecar: TagTrackSidecar = {
         sessionId,
-        mimeType: session.mimeType,
-        clockOrigin: session.clockOrigin,
-        startedAt: session.startedAt,
-        declaredSpeaker: session.declaredSpeaker,
+        mimeType: take.mimeType,
+        clockOrigin: take.clockOrigin,
+        startedAt: take.startedAt,
+        declaredSpeaker: take.declaredSpeaker,
         spans,
       };
       downloadJson(filename, sidecar);
@@ -636,6 +692,33 @@ export const LiveInterview: React.FC = () => {
       setError(err instanceof Error ? err.message : "Could not build the tag-track sidecar.");
     } finally {
       setDownloading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  /**
+   * Deletes one take and refetches the list (D-32). Guarded against a second
+   * concurrent press for the same take id — a concurrent delete of a
+   * different take is unaffected. If the deleted take is also the one the
+   * completion line (`session`/`summary`/`elapsedMs`, kept for
+   * `RecordingControls`'s stopped-state text) refers to, that state is
+   * cleared too, so nothing on screen still describes a take that no longer
+   * exists.
+   */
+  const handleDeleteTake = async (sessionId: string) => {
+    if (deletingIds[sessionId]) return;
+    setDeletingIds((prev) => ({ ...prev, [sessionId]: true }));
+    try {
+      await deleteSession(sessionId);
+      const takes = await listStoppedSessions();
+      setStoppedTakes(takes);
+      if (session?.sessionId === sessionId) {
+        setSession(null);
+        setSummary(null);
+        setUnreadableCount(0);
+        setElapsedMs(0);
+      }
+    } finally {
+      setDeletingIds((prev) => ({ ...prev, [sessionId]: false }));
     }
   };
 
@@ -724,18 +807,18 @@ export const LiveInterview: React.FC = () => {
           />
         )}
 
-        {status === "stopped" && session && summary && (
-          <RecordingDownloads
-            summary={summary}
-            unreadableCount={unreadableCount}
-            downloading={downloading}
-            sessionId={session.sessionId}
-            startedAt={session.startedAt}
-            mimeType={session.mimeType}
-            onDownloadAudio={handleDownloadAudio}
-            onDownloadSidecar={handleDownloadSidecar}
-          />
-        )}
+        {/* D-31: every stopped take, newest-first — a sibling of the consent
+            branch above so a re-ask can never hide a finished take's
+            downloads (04-12's structural property, preserved here). */}
+        <RecordingDownloads
+          takes={stoppedTakes}
+          downloading={downloading}
+          deletingIds={deletingIds}
+          hasActiveTake={status === "connecting" || status === "armed" || status === "recording" || status === "paused"}
+          onDownloadAudio={handleDownloadAudio}
+          onDownloadSidecar={handleDownloadSidecar}
+          onDeleteTake={handleDeleteTake}
+        />
       </div>
     </ToolSection>
   );

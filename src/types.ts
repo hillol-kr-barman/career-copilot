@@ -99,6 +99,13 @@ export interface RecordingSession {
   mimeType: string;
   status: "recording" | "stopped";
   durationMs: number;
+  /**
+   * The finished take's total byte size, recorded once after stop via
+   * `updateSessionSize` so listing N takes never reads N takes' worth of
+   * blobs. Optional and defaults to 0 for a record written before this field
+   * existed (see `normaliseSessionRecord`).
+   */
+  sizeBytes?: number;
 }
 
 /** Metadata for one recorded chunk, without its payload. */
