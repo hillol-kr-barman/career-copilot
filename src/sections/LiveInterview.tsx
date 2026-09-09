@@ -36,6 +36,7 @@ import {
   nextSeqFor,
   listStoppedSessions,
   updateSessionSize,
+  closeRecoveredSession,
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob, downloadJson } from "../lib/download";
@@ -193,6 +194,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     startedAt: number;
     seedSeq: number;
     tsOffsetMs: number;
+    /** The speaker recovered from the crashed take's last press (D-25/D-26)
+     * — carried into the resumed take's opening speaker instead of the
+     * fresh-take default of "interviewer" (T-04-15-02). */
+    initialSpeaker: Speaker;
   } | null>(null);
 
   // The most recent appendChunk promise (already .catch()-chained, so
@@ -442,7 +447,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
    */
   const handleResumeRecovery = async () => {
     if (!recoveryInfo) return;
-    const { session: recovered, chunkCount, latestTsMs } = recoveryInfo;
+    const { session: recovered, chunkCount, latestTsMs, lastSpeaker } = recoveryInfo;
 
     if (chunkCount === 0) {
       await deleteSession(recovered.sessionId);
@@ -460,6 +465,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
         startedAt: recovered.startedAt,
         seedSeq,
         tsOffsetMs: latestTsMs,
+        // D-25: no press at all means the crash happened before anyone was
+        // ever marked, so the take is still on the opening default.
+        initialSpeaker: lastSpeaker ?? "interviewer",
       };
       setIsResumingSession(true);
       setDeclaredSpeaker(recovered.declaredSpeaker);
@@ -469,6 +477,27 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       setRecoveryInfo(null);
       setRecoveryError(RECOVERY_FAILED_COPY);
     }
+  };
+
+  /**
+   * "Keep as-is" (D-29, T-04-15-04): closes the recovered take at its last
+   * durable chunk without resuming it, so the audio can be kept without
+   * being continued. Clears the prompt regardless of outcome — a failed
+   * close has nothing left worth resuming either — and surfaces the
+   * existing recovery-failed copy rather than silently dropping the prompt
+   * when the store reports nothing was actually saved (`closingMs === 0`).
+   */
+  const handleSaveAsIs = async () => {
+    if (!recoveryInfo) return;
+    const { sessionId } = recoveryInfo.session;
+    const closingMs = await closeRecoveredSession(sessionId);
+    setRecoveryInfo(null);
+    if (closingMs === 0) {
+      setRecoveryError(RECOVERY_FAILED_COPY);
+      return;
+    }
+    const takes = await listStoppedSessions();
+    setStoppedTakes(takes);
   };
 
   /**
@@ -629,6 +658,23 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       pauseStartRef.current = null;
       tsOffsetMsRef.current = tsOffsetMs;
 
+      // WINDOWS #2: the session row is written — with durable ("strict")
+      // IndexedDB durability, see createSession's doc comment — before the
+      // recorder can produce a single chunk, not after. The recorder used to
+      // start first, so a chunk write's transaction could exist entirely
+      // independently of whether the session row it belongs to had actually
+      // been created yet; findResumableSession only ever looks at that row,
+      // so a reload landing in that window had real audio on disk with
+      // nothing to point a recovery prompt at. Creating the row first closes
+      // the window rather than narrowing it.
+      const newSession = await createSession(db, {
+        sessionId,
+        startedAt: resumeSeed?.startedAt ?? Date.now(),
+        clockOrigin: clockOriginRef.current,
+        declaredSpeaker,
+        mimeType,
+      });
+
       const handle = startRecorder(micStream, mimeType, clock, (meta, blob) => {
         const adjusted = { ...meta, sessionId, seq: meta.seq + seedSeq };
         pendingChunkWritesRef.current = appendChunk(db, adjusted, blob).catch((chunkErr) => {
@@ -640,18 +686,16 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       // MediaRecorder running with no session behind it.
       recorderHandleRef.current = handle;
 
-      const newSession = await createSession(db, {
-        sessionId,
-        startedAt: resumeSeed?.startedAt ?? Date.now(),
-        clockOrigin: clockOriginRef.current,
-        declaredSpeaker,
-        mimeType,
-      });
-
       resumeSeedRef.current = null;
       setIsResumingSession(false);
       setSession(newSession);
-      setSpeaker("interviewer"); // D-25: reset to the opening default for every take
+      // D-25/D-26: a fresh take always opens on the interviewer default; a
+      // resumed take is the *same* take, so it carries forward whoever was
+      // actually marked when the crash happened (T-04-15-02) — reopening on
+      // the interviewer here would insert an unmade speaker change at the
+      // seam. Two branches, not a shared default, because the two cases mean
+      // different things.
+      setSpeaker(resumeSeed ? resumeSeed.initialSpeaker : "interviewer");
       setElapsedMs(tsOffsetMs);
       setStatus("recording");
 
@@ -921,7 +965,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
           <CrashRecoveryPrompt
             session={recoveryInfo.session}
             capturedDurationMs={recoveryInfo.latestTsMs}
+            pressCount={recoveryInfo.pressCount}
             onResume={handleResumeRecovery}
+            onSaveAsIs={handleSaveAsIs}
             onDiscard={handleDiscardRecovery}
           />
         ) : null}
