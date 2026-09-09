@@ -11,7 +11,13 @@
  * calling `performance.now()`.
  */
 import assert from "node:assert/strict";
-import { deriveSpans, sortTakesNewestFirst, normaliseSessionRecord } from "../src/lib/recordingStore";
+import {
+  deriveSpans,
+  sortTakesNewestFirst,
+  normaliseSessionRecord,
+  recoveredEndMs,
+  summariseChunks,
+} from "../src/lib/recordingStore";
 import { audioElapsedMs } from "../src/lib/recorder";
 import {
   evaluatePreflightSample,
@@ -19,7 +25,7 @@ import {
   PREFLIGHT_SUSTAIN_MS,
 } from "../src/lib/levelMeter";
 import type { PreflightSampleState } from "../src/lib/levelMeter";
-import type { TagPress, RecordingSession } from "../src/types";
+import type { TagPress, RecordingSession, AudioChunkMeta } from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
 // Asserted algebraically: with clockOrigin === performance.now() at call time
@@ -276,6 +282,80 @@ const SAMPLE_MS = 50;
   const b = evaluatePreflightSample(input, PREFLIGHT_FLOOR_RMS, SAMPLE_MS, PREFLIGHT_FLOOR_RMS, PREFLIGHT_SUSTAIN_MS);
   assert.deepEqual(input, inputCopy, "evaluatePreflightSample must not mutate its input state");
   assert.deepEqual(a, b, "calling evaluatePreflightSample twice with the same arguments must return equal results");
+}
+
+// 04-15: recoveredEndMs (D-29) — the closing boundary as a pure function.
+
+// recoveredEndMs returns 0 for an empty chunk list.
+{
+  assert.equal(recoveredEndMs([]), 0);
+}
+
+// recoveredEndMs returns the largest chunk timestamp regardless of the
+// list's order.
+{
+  const result = recoveredEndMs([{ tsMs: 5000 }, { tsMs: 20000 }, { tsMs: 10000 }]);
+  assert.equal(result, 20000, "recoveredEndMs must return the largest timestamp regardless of input order");
+}
+
+// recoveredEndMs ignores a chunk whose timestamp is not a number rather than
+// returning a non-numeric result or letting it win a comparison it has no
+// claim to.
+{
+  const result = recoveredEndMs([
+    { tsMs: 5000 },
+    { tsMs: "not-a-number" as unknown as number },
+    { tsMs: 15000 },
+  ]);
+  assert.equal(result, 15000, "a non-numeric tsMs must be ignored, not crash or poison the result");
+  assert.equal(typeof result, "number");
+}
+
+// summariseChunks reports a duration equal to the largest readable chunk
+// timestamp, with no timeslice added (04-11's flagged assumption, resolved).
+{
+  const chunks: AudioChunkMeta[] = [
+    { sessionId: "s1", seq: 0, tsMs: 5000, size: 10, mimeType: "audio/webm" },
+    { sessionId: "s1", seq: 1, tsMs: 20000, size: 10, mimeType: "audio/webm" },
+  ];
+  const summary = summariseChunks(chunks, 2);
+  assert.equal(summary.durationMs, 20000, "summariseChunks must report the largest tsMs with no timeslice added");
+}
+
+// summariseChunks reports a 0 duration when no chunk is readable.
+{
+  const summary = summariseChunks([], 3);
+  assert.equal(summary.durationMs, 0);
+  assert.equal(summary.chunkCount, 3);
+  assert.equal(summary.readableCount, 0);
+}
+
+// deriveSpans closed at the value recoveredEndMs returns produces a final
+// span whose end equals that value exactly — the key link between the D-29
+// boundary and the sidecar's final endMs.
+{
+  const chunks = [{ tsMs: 5000 }, { tsMs: 20000 }];
+  const boundary = recoveredEndMs(chunks);
+  const presses: TagPress[] = [{ sessionId: "s1", tsMs: 8000, speaker: "candidate" }];
+  const spans = deriveSpans(presses, boundary);
+  assert.equal(spans[spans.length - 1].endMs, boundary, "the final span must close at exactly the recoveredEndMs boundary");
+}
+
+// deriveSpans drops a press landing at or after the closing boundary, so no
+// span in the result begins — or ends — past the end of the recording.
+{
+  const boundary = 20000;
+  const presses: TagPress[] = [
+    { sessionId: "s1", tsMs: 8000, speaker: "candidate" },
+    { sessionId: "s1", tsMs: 20500, speaker: "interviewer" }, // landed after the boundary
+  ];
+  const spans = deriveSpans(presses, boundary);
+  for (const span of spans) {
+    assert.ok(span.startMs < boundary, `span ${JSON.stringify(span)} must not begin at or after the closing boundary`);
+    assert.ok(span.endMs <= boundary, `span ${JSON.stringify(span)} must not end past the closing boundary`);
+  }
+  assert.equal(spans[spans.length - 1].endMs, boundary);
+  assert.equal(spans[spans.length - 1].speaker, "candidate", "the out-of-range press must not have moved the current speaker");
 }
 
 console.log("check-tag-track: all assertions passed");
