@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { RotateCcw, Save, Trash2 } from "lucide-react";
 import type { RecordingSession } from "../types";
+import { formatRelativeTime } from "../lib/formatTime";
 
 export interface CrashRecoveryPromptProps {
   session: RecordingSession;
@@ -20,18 +21,6 @@ const formatCapturedDuration = (ms: number): string => {
   const seconds = totalSeconds % 60;
   if (minutes === 0) return `${seconds}s`;
   return `${minutes}m ${seconds}s`;
-};
-
-const formatRelativeTime = (startedAt: number): string => {
-  const diffMinutes = Math.round((Date.now() - startedAt) / 60000);
-  if (diffMinutes < 1) return "just now";
-  if (diffMinutes === 1) return "1 minute ago";
-  if (diffMinutes < 60) return `${diffMinutes} minutes ago`;
-  const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours === 1) return "1 hour ago";
-  if (diffHours < 24) return `${diffHours} hours ago`;
-  const diffDays = Math.round(diffHours / 24);
-  return diffDays === 1 ? "1 day ago" : `${diffDays} days ago`;
 };
 
 /**

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { CaptureStatus, Speaker } from "../types";
 import type { LevelMeterHandle } from "../lib/levelMeter";
+import { formatElapsed } from "../lib/formatTime";
 import { SpeakerBanner, SPEAKER_LABEL } from "./SpeakerBanner";
 
 /** A soft, non-blocking notice — currently only the wake-lock-unavailable warning. */
@@ -35,13 +36,6 @@ export interface RecordingWarning {
  */
 export const TAB_FOCUS_ADVISORY =
   "Keep this tab visible and this window focused while recording. A hidden tab loses the screen wake lock, and an unfocused window won't receive spacebar presses — the speaker mark will be missed.";
-
-const formatElapsed = (ms: number): string => {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-};
 
 /** The four stream-health states from the Copywriting Contract — icon + text always paired, never color alone. */
 type ChipState = "healthy" | "missing" | "waiting" | "silent";

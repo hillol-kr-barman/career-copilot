@@ -2,32 +2,13 @@ import React, { useState } from "react";
 import { Download, RefreshCw, Trash2 } from "lucide-react";
 import type { RecordingSession } from "../types";
 import { extensionForMimeType } from "../lib/recorder";
-
-const formatElapsed = (ms: number): string => {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-};
+import { formatElapsed, formatRelativeTime } from "../lib/formatTime";
 
 const formatSizeMb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1);
 
 /** A local date and time, e.g. "Sep 8, 2026, 4:12 PM" — the take's label. */
 const formatStartedAt = (startedAt: number): string =>
   new Date(startedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-
-/** Matches `CrashRecoveryPrompt`'s relative-age idiom, reused here for the same reason: a human reads "12 minutes ago" faster than a timestamp. */
-const formatRelativeTime = (startedAt: number): string => {
-  const diffMinutes = Math.round((Date.now() - startedAt) / 60000);
-  if (diffMinutes < 1) return "just now";
-  if (diffMinutes === 1) return "1 minute ago";
-  if (diffMinutes < 60) return `${diffMinutes} minutes ago`;
-  const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours === 1) return "1 hour ago";
-  if (diffHours < 24) return `${diffHours} hours ago`;
-  const diffDays = Math.round(diffHours / 24);
-  return diffDays === 1 ? "1 day ago" : `${diffDays} days ago`;
-};
 
 /**
  * Pairs a take's two filenames by a shared, sortable basename derived from
