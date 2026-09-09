@@ -102,6 +102,16 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   const [inputDevices, setInputDevices] = useState<AudioInputDevice[]>([]);
   const [micFellBackToDefault, setMicFellBackToDefault] = useState(false);
 
+  // D-37: per-side pre-flight cleared flags, owned here (not by MicSetup) so
+  // they survive the panel unmounting between takes — once both are true,
+  // later takes show a compact passed line instead of the full step.
+  // Nothing about this is persisted beyond the page session (no storage
+  // write, no localStorage) — it describes the room as it is right now.
+  const [preflightCleared, setPreflightCleared] = useState<Record<Speaker, boolean>>({
+    interviewer: false,
+    candidate: false,
+  });
+
   // D-25: the opening span belongs to the interviewer, so the current-speaker
   // surface (and the spacebar's first flip) starts there for every take.
   const [speaker, setSpeaker] = useState<Speaker>("interviewer");
@@ -561,6 +571,16 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     }
   };
 
+  /** D-37: marks one side's pre-flight check cleared, the instant MicSetup's rolling sample first latches for that side. */
+  const handlePreflightSideCleared = (side: Speaker) => {
+    setPreflightCleared((prev) => ({ ...prev, [side]: true }));
+  };
+
+  /** D-37: the compact-view "run pre-flight again" control — resets both flags and reopens the full step. */
+  const handlePreflightReset = () => {
+    setPreflightCleared({ interviewer: false, candidate: false });
+  };
+
   const handleBegin = async () => {
     if (!micStream) return;
     setError("");
@@ -944,6 +964,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
                 onSelectDevice={handleSelectDevice}
                 fellBackToDefault={micFellBackToDefault}
                 disabled={status === "recording" || status === "paused"}
+                micMeterRef={micMeterRef}
+                preflightCleared={preflightCleared}
+                onPreflightSideCleared={handlePreflightSideCleared}
+                onPreflightReset={handlePreflightReset}
               />
             )}
             <RecordingControls
@@ -952,6 +976,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
               elapsedMs={elapsedMs}
               micMeterRef={micMeterRef}
               speaker={speaker}
+              preflightCleared={preflightCleared}
               onConnect={handleConnect}
               onBegin={handleBegin}
               onPause={handlePause}

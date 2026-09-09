@@ -82,3 +82,61 @@ export const SILENCE_GRACE_MS = 5000;
 
 /** Continuous near-silence duration on the tab stream that raises the silence-watchdog notice. */
 export const SILENCE_WATCHDOG_MS = 15000;
+
+/**
+ * The RMS level the D-37 pre-flight treats as "loud enough to transcribe".
+ * A starting point, not a measured threshold (A3, LOW confidence, see
+ * 04-RESEARCH.md) — three times `NEAR_SILENCE_RMS`, which is a silence
+ * threshold and not an audibility one. Kept in one place so it can be
+ * revised once real peak numbers exist.
+ */
+export const PREFLIGHT_FLOOR_RMS = 0.03;
+
+/**
+ * How long a level must stay at or above `PREFLIGHT_FLOOR_RMS` before the
+ * D-37 pre-flight latches a side as cleared. A starting point, not a
+ * measured threshold — chosen to be long enough that a single loud
+ * consonant can't pass the check on its own, short enough not to make the
+ * operator hold a sentence.
+ */
+export const PREFLIGHT_SUSTAIN_MS = 300;
+
+/** One side's rolling pre-flight measurement — the D-37 sample evaluator's state. */
+export interface PreflightSampleState {
+  /** The maximum level seen so far this side's attempt; never decreases. */
+  peakLevel: number;
+  /** Milliseconds this side has spent continuously at or above the floor. */
+  sustainedMs: number;
+  /** Latches true once `sustainedMs` first reaches the sustain threshold, and stays true regardless of later samples (D-37: a person who spoke and then stopped has still passed). */
+  cleared: boolean;
+}
+
+/**
+ * Pure, latching evaluator for one pre-flight sample (D-37). Touches no
+ * browser global — importable and callable under Node, the same discipline
+ * `computeRmsLevel` above already follows — and mutates neither `prev` nor
+ * any module-level value, so calling it twice with the same arguments
+ * returns equal results.
+ *
+ * A cleared state is a fixed point: once `cleared` is true, later samples
+ * only ever raise `peakLevel`, never re-arm `sustainedMs` or un-clear the
+ * result. Prior to that, any sample below `floor` resets the accumulated
+ * `sustainedMs` to zero rather than merely pausing it — the sustain window
+ * must be continuous.
+ */
+export function evaluatePreflightSample(
+  prev: PreflightSampleState,
+  level: number,
+  sampleMs: number,
+  floor: number,
+  sustainMs: number
+): PreflightSampleState {
+  const peakLevel = Math.max(prev.peakLevel, level);
+
+  if (prev.cleared) {
+    return { peakLevel, sustainedMs: prev.sustainedMs, cleared: true };
+  }
+
+  const sustainedMs = level >= floor ? prev.sustainedMs + sampleMs : 0;
+  return { peakLevel, sustainedMs, cleared: sustainedMs >= sustainMs };
+}

@@ -13,6 +13,12 @@
 import assert from "node:assert/strict";
 import { deriveSpans, sortTakesNewestFirst, normaliseSessionRecord } from "../src/lib/recordingStore";
 import { audioElapsedMs } from "../src/lib/recorder";
+import {
+  evaluatePreflightSample,
+  PREFLIGHT_FLOOR_RMS,
+  PREFLIGHT_SUSTAIN_MS,
+} from "../src/lib/levelMeter";
+import type { PreflightSampleState } from "../src/lib/levelMeter";
 import type { TagPress, RecordingSession } from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
@@ -182,6 +188,94 @@ const baseSession: RecordingSession = {
   const normalised = normaliseSessionRecord(raw);
   assert.ok(normalised, "a record with a non-number sizeBytes must still normalise");
   assert.equal(normalised?.sizeBytes, 0);
+}
+
+// 04-14: evaluatePreflightSample (D-37) — the pre-flight's pure, latching
+// sample evaluator. Uses PREFLIGHT_FLOOR_RMS / PREFLIGHT_SUSTAIN_MS directly
+// so this stays coupled to whatever the constants are actually set to.
+const FRESH_STATE: PreflightSampleState = { peakLevel: 0, sustainedMs: 0, cleared: false };
+const SAMPLE_MS = 50;
+
+// A level below the floor returns a state whose sustained duration is 0.
+{
+  const result = evaluatePreflightSample(
+    FRESH_STATE,
+    PREFLIGHT_FLOOR_RMS - 0.01,
+    SAMPLE_MS,
+    PREFLIGHT_FLOOR_RMS,
+    PREFLIGHT_SUSTAIN_MS
+  );
+  assert.equal(result.sustainedMs, 0, "a below-floor sample must reset sustainedMs to 0");
+  assert.equal(result.cleared, false);
+}
+
+// Consecutive levels at or above the floor accumulate the sustained
+// duration by the sample interval each time.
+{
+  const first = evaluatePreflightSample(
+    FRESH_STATE,
+    PREFLIGHT_FLOOR_RMS,
+    SAMPLE_MS,
+    PREFLIGHT_FLOOR_RMS,
+    PREFLIGHT_SUSTAIN_MS
+  );
+  assert.equal(first.sustainedMs, SAMPLE_MS);
+  const second = evaluatePreflightSample(
+    first,
+    PREFLIGHT_FLOOR_RMS,
+    SAMPLE_MS,
+    PREFLIGHT_FLOOR_RMS,
+    PREFLIGHT_SUSTAIN_MS
+  );
+  assert.equal(second.sustainedMs, SAMPLE_MS * 2, "sustainedMs must accumulate by sampleMs each call");
+  assert.equal(second.cleared, false, "must not clear before reaching the sustain threshold");
+}
+
+// Once the sustained duration reaches the sustain threshold, the returned
+// state is cleared.
+{
+  let state = FRESH_STATE;
+  const steps = Math.ceil(PREFLIGHT_SUSTAIN_MS / SAMPLE_MS);
+  for (let i = 0; i < steps; i++) {
+    state = evaluatePreflightSample(state, PREFLIGHT_FLOOR_RMS, SAMPLE_MS, PREFLIGHT_FLOOR_RMS, PREFLIGHT_SUSTAIN_MS);
+  }
+  assert.ok(state.sustainedMs >= PREFLIGHT_SUSTAIN_MS);
+  assert.equal(state.cleared, true, "reaching the sustain threshold must clear the state");
+}
+
+// A cleared state stays cleared on a subsequent below-floor sample — the
+// result latches, so a person who spoke and then stopped has still passed.
+{
+  const cleared: PreflightSampleState = { peakLevel: 0.5, sustainedMs: PREFLIGHT_SUSTAIN_MS, cleared: true };
+  const afterSilence = evaluatePreflightSample(
+    cleared,
+    0,
+    SAMPLE_MS,
+    PREFLIGHT_FLOOR_RMS,
+    PREFLIGHT_SUSTAIN_MS
+  );
+  assert.equal(afterSilence.cleared, true, "a cleared state must latch through a later below-floor sample");
+}
+
+// The peak level in the returned state is the maximum of the previous peak
+// and the current level, and never decreases.
+{
+  const withPeak: PreflightSampleState = { peakLevel: 0.4, sustainedMs: 0, cleared: false };
+  const higher = evaluatePreflightSample(withPeak, 0.7, SAMPLE_MS, PREFLIGHT_FLOOR_RMS, PREFLIGHT_SUSTAIN_MS);
+  assert.equal(higher.peakLevel, 0.7, "peakLevel must rise to a higher observed level");
+  const lower = evaluatePreflightSample(higher, 0.1, SAMPLE_MS, PREFLIGHT_FLOOR_RMS, PREFLIGHT_SUSTAIN_MS);
+  assert.equal(lower.peakLevel, 0.7, "peakLevel must never decrease on a lower observed level");
+}
+
+// The function mutates neither its input state nor any module-level value;
+// calling it twice with the same arguments returns equal results.
+{
+  const input: PreflightSampleState = { peakLevel: 0.2, sustainedMs: 100, cleared: false };
+  const inputCopy = { ...input };
+  const a = evaluatePreflightSample(input, PREFLIGHT_FLOOR_RMS, SAMPLE_MS, PREFLIGHT_FLOOR_RMS, PREFLIGHT_SUSTAIN_MS);
+  const b = evaluatePreflightSample(input, PREFLIGHT_FLOOR_RMS, SAMPLE_MS, PREFLIGHT_FLOOR_RMS, PREFLIGHT_SUSTAIN_MS);
+  assert.deepEqual(input, inputCopy, "evaluatePreflightSample must not mutate its input state");
+  assert.deepEqual(a, b, "calling evaluatePreflightSample twice with the same arguments must return equal results");
 }
 
 console.log("check-tag-track: all assertions passed");
