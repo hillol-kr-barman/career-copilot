@@ -23,6 +23,15 @@ export function pickSupportedMimeType(): string {
 }
 
 /**
+ * Extension the container the file actually holds — `pickSupportedMimeType`
+ * can negotiate the Ogg fallback, so a filename that always says `.webm`
+ * mislabels an Ogg file whenever that path is exercised (WR-03).
+ */
+export function extensionForMimeType(mimeType: string): string {
+  return mimeType.includes("ogg") ? "ogg" : "webm";
+}
+
+/**
  * Whether this browser can record audio at all — the real remaining
  * constraint after the in-room pivot dropped the Chromium-only tab-audio
  * gate. True only when `MediaRecorder` exists, `getUserMedia` exists, and at

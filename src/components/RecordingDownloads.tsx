@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Download, RefreshCw, Trash2 } from "lucide-react";
 import type { RecordingSession } from "../types";
+import { extensionForMimeType } from "../lib/recorder";
 
 const formatElapsed = (ms: number): string => {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -27,13 +28,6 @@ const formatRelativeTime = (startedAt: number): string => {
   const diffDays = Math.round(diffHours / 24);
   return diffDays === 1 ? "1 day ago" : `${diffDays} days ago`;
 };
-
-/**
- * Extension the container the file actually holds — `pickSupportedMimeType`
- * can negotiate the Ogg fallback, so a filename that always says `.webm`
- * mislabels an Ogg file whenever that path is exercised (WR-03).
- */
-const extensionForMimeType = (mimeType: string): string => (mimeType.includes("ogg") ? "ogg" : "webm");
 
 /**
  * Pairs a take's two filenames by a shared, sortable basename derived from

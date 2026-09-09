@@ -18,13 +18,20 @@ import {
   recoveredEndMs,
   summariseChunks,
 } from "../src/lib/recordingStore";
-import { audioElapsedMs } from "../src/lib/recorder";
+import {
+  audioElapsedMs,
+  pickSupportedMimeType,
+  isRecordingFormatSupported,
+  extensionForMimeType,
+} from "../src/lib/recorder";
 import {
   evaluatePreflightSample,
+  computeRmsLevel,
   PREFLIGHT_FLOOR_RMS,
   PREFLIGHT_SUSTAIN_MS,
 } from "../src/lib/levelMeter";
 import type { PreflightSampleState } from "../src/lib/levelMeter";
+import { describeCaptureError, UNSUPPORTED_FORMAT_REASON } from "../src/lib/audioCapture";
 import type { TagPress, RecordingSession, AudioChunkMeta } from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
@@ -196,6 +203,177 @@ const baseSession: RecordingSession = {
   assert.equal(normalised?.sizeBytes, 0);
 }
 
+// computeRmsLevel (LIVE-04): zero-length input returns 0.
+{
+  const result = computeRmsLevel(new Float32Array(0));
+  assert.equal(result, 0, "an empty buffer must return 0");
+}
+
+// computeRmsLevel returns the true RMS of a known in-range buffer: [0.3, 0.4]
+// has RMS sqrt((0.09 + 0.16) / 2) = sqrt(0.125), well under the clamp.
+{
+  const samples = new Float32Array([0.3, 0.4]);
+  const result = computeRmsLevel(samples);
+  const expected = Math.sqrt(0.125);
+  assert.ok(
+    Math.abs(result - expected) < 1e-6,
+    `expected RMS of [0.3, 0.4] to be ~${expected}, got ${result}`
+  );
+}
+
+// computeRmsLevel clamps to 1 for out-of-range samples whose true RMS
+// exceeds 1.
+{
+  const samples = new Float32Array([5, 5, 5, 5]);
+  const result = computeRmsLevel(samples);
+  assert.equal(result, 1, "an out-of-range buffer must clamp to 1, not return its true (>1) RMS");
+}
+
+// computeRmsLevel of a DC-offset buffer of all-same-magnitude samples
+// returns that magnitude exactly.
+{
+  const samples = new Float32Array([0.25, 0.25, 0.25, 0.25]);
+  const result = computeRmsLevel(samples);
+  assert.equal(result, 0.25, "a constant-magnitude buffer's RMS must equal that magnitude");
+}
+
+// computeRmsLevel does not mutate its input.
+{
+  const samples = new Float32Array([0.1, 0.5, 0.9]);
+  const copy = Float32Array.from(samples);
+  computeRmsLevel(samples);
+  assert.deepEqual(Array.from(samples), Array.from(copy), "computeRmsLevel must not mutate its input buffer");
+}
+
+// pickSupportedMimeType / isRecordingFormatSupported (LIVE-26, D-05): these
+// read MediaRecorder and navigator.mediaDevices.getUserMedia, neither of
+// which exists under Node, so each block stubs globalThis and restores the
+// originals immediately after so no stub leaks into a later block.
+{
+  const originalMediaRecorder = (globalThis as any).MediaRecorder;
+  const originalNavigator = (globalThis as any).navigator;
+  // `navigator` is defined as a getter-only accessor on the Node global
+  // object, so a plain assignment throws — it must be redefined instead.
+  const setNavigator = (value: unknown) =>
+    Object.defineProperty(globalThis, "navigator", { value, configurable: true, writable: true });
+
+  // pickSupportedMimeType returns the FIRST supported candidate in
+  // MIME_CANDIDATES order (["audio/webm;codecs=opus", "audio/webm",
+  // "audio/ogg;codecs=opus"]), not merely any supported one.
+  (globalThis as any).MediaRecorder = {
+    isTypeSupported: (type: string) => type === "audio/webm" || type === "audio/ogg;codecs=opus",
+  };
+  {
+    const result = pickSupportedMimeType();
+    assert.equal(
+      result,
+      "audio/webm",
+      "pickSupportedMimeType must return the first supported candidate in declared order, not any supported one"
+    );
+  }
+
+  // pickSupportedMimeType throws when no candidate is supported.
+  (globalThis as any).MediaRecorder = { isTypeSupported: () => false };
+  assert.throws(
+    () => pickSupportedMimeType(),
+    /No supported audio recording format/,
+    "pickSupportedMimeType must throw when no candidate is supported"
+  );
+
+  // isRecordingFormatSupported is false when MediaRecorder is undefined,
+  // decided on capability probes alone (D-05: browser-family-agnostic).
+  delete (globalThis as any).MediaRecorder;
+  setNavigator({ mediaDevices: { getUserMedia: () => {} } });
+  assert.equal(
+    isRecordingFormatSupported(),
+    false,
+    "isRecordingFormatSupported must be false when MediaRecorder is undefined"
+  );
+
+  // false when getUserMedia is missing, even with MediaRecorder present and
+  // capable.
+  (globalThis as any).MediaRecorder = { isTypeSupported: () => true };
+  setNavigator({ mediaDevices: {} });
+  assert.equal(
+    isRecordingFormatSupported(),
+    false,
+    "isRecordingFormatSupported must be false when getUserMedia is missing"
+  );
+
+  // false when no candidate type is supported, even with both globals
+  // present.
+  (globalThis as any).MediaRecorder = { isTypeSupported: () => false };
+  setNavigator({ mediaDevices: { getUserMedia: () => {} } });
+  assert.equal(
+    isRecordingFormatSupported(),
+    false,
+    "isRecordingFormatSupported must be false when no candidate MIME type is supported"
+  );
+
+  // true when MediaRecorder exists, getUserMedia exists, and a candidate is
+  // supported — capability probes alone decide it, with no user-agent check.
+  (globalThis as any).MediaRecorder = { isTypeSupported: () => true };
+  setNavigator({ mediaDevices: { getUserMedia: () => {} } });
+  assert.equal(
+    isRecordingFormatSupported(),
+    true,
+    "isRecordingFormatSupported must be true when every capability probe passes"
+  );
+
+  if (originalMediaRecorder === undefined) delete (globalThis as any).MediaRecorder;
+  else (globalThis as any).MediaRecorder = originalMediaRecorder;
+  setNavigator(originalNavigator);
+}
+
+// extensionForMimeType (LIVE-08): mirrors the MIME negotiation in this same
+// file, now exported and importable under Node (moved out of the .tsx
+// component that could not be imported here).
+{
+  assert.equal(extensionForMimeType("audio/ogg"), "ogg");
+  assert.equal(extensionForMimeType("audio/webm"), "webm");
+  assert.equal(
+    extensionForMimeType("audio/webm;codecs=opus"),
+    "webm",
+    "the codec-suffixed webm form pickSupportedMimeType actually produces must map to webm"
+  );
+  assert.equal(
+    extensionForMimeType("audio/ogg;codecs=opus"),
+    "ogg",
+    "the codec-suffixed ogg form pickSupportedMimeType actually produces must map to ogg"
+  );
+}
+
+// describeCaptureError (LIVE-26): each documented branch of the Copywriting
+// Contract, asserted against the exported constants rather than hardcoded
+// copy where an export exists.
+{
+  // NotAllowedError maps to the blocked-microphone copy. This string is not
+  // exported as a constant by audioCapture.ts, so it is duplicated here
+  // verbatim rather than hardcoding an approximation.
+  const blocked = describeCaptureError(new DOMException("denied", "NotAllowedError"));
+  assert.equal(
+    blocked,
+    "Microphone access was blocked. Click the camera/mic icon in your browser's address bar, allow microphone access, then try again."
+  );
+
+  // NotSupportedError maps to UNSUPPORTED_FORMAT_REASON.
+  assert.equal(describeCaptureError(new DOMException("nope", "NotSupportedError")), UNSUPPORTED_FORMAT_REASON);
+
+  // A plain Error whose message matches /supported audio recording format/
+  // also maps to UNSUPPORTED_FORMAT_REASON — this is the bridge to
+  // pickSupportedMimeType's thrown message.
+  assert.equal(
+    describeCaptureError(new Error("No supported audio recording format in this browser.")),
+    UNSUPPORTED_FORMAT_REASON
+  );
+
+  // Any other Error passes its own message through unchanged.
+  assert.equal(describeCaptureError(new Error("some other failure")), "some other failure");
+
+  // A non-Error value returns the generic fallback string.
+  assert.equal(describeCaptureError("not an error at all"), "Something went wrong connecting the microphone.");
+}
+
 // 04-14: evaluatePreflightSample (D-37) — the pre-flight's pure, latching
 // sample evaluator. Uses PREFLIGHT_FLOOR_RMS / PREFLIGHT_SUSTAIN_MS directly
 // so this stays coupled to whatever the constants are actually set to.
@@ -282,6 +460,105 @@ const SAMPLE_MS = 50;
   const b = evaluatePreflightSample(input, PREFLIGHT_FLOOR_RMS, SAMPLE_MS, PREFLIGHT_FLOOR_RMS, PREFLIGHT_SUSTAIN_MS);
   assert.deepEqual(input, inputCopy, "evaluatePreflightSample must not mutate its input state");
   assert.deepEqual(a, b, "calling evaluatePreflightSample twice with the same arguments must return equal results");
+}
+
+// normaliseSessionRecord rejects each malformed shape its actual guards
+// check for, returning null rather than a partially-trusted record.
+{
+  const validRaw = {
+    sessionId: "s1",
+    startedAt: 1000,
+    clockOrigin: 0,
+    declaredSpeaker: "candidate",
+    mimeType: "audio/webm",
+    status: "stopped",
+    durationMs: 5000,
+    sizeBytes: 100,
+  };
+
+  // null and undefined are rejected.
+  assert.equal(normaliseSessionRecord(null), null, "null must be rejected");
+  assert.equal(normaliseSessionRecord(undefined), null, "undefined must be rejected");
+
+  // A non-object value is rejected.
+  assert.equal(normaliseSessionRecord("not an object"), null, "a non-object value must be rejected");
+  assert.equal(normaliseSessionRecord(42), null, "a number must be rejected");
+
+  // A missing or non-string sessionId is rejected.
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, sessionId: undefined }),
+    null,
+    "a missing sessionId must be rejected"
+  );
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, sessionId: 123 }),
+    null,
+    "a non-string sessionId must be rejected"
+  );
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, sessionId: "" }),
+    null,
+    "an empty-string sessionId must be rejected"
+  );
+
+  // A missing or non-number clockOrigin is rejected.
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, clockOrigin: undefined }),
+    null,
+    "a missing clockOrigin must be rejected"
+  );
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, clockOrigin: "0" }),
+    null,
+    "a non-number clockOrigin must be rejected"
+  );
+
+  // A missing, non-string, or empty mimeType is rejected.
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, mimeType: undefined }),
+    null,
+    "a missing mimeType must be rejected"
+  );
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, mimeType: "" }),
+    null,
+    "an empty-string mimeType must be rejected"
+  );
+
+  // A missing or non-string declaredSpeaker is rejected (note: an
+  // out-of-vocabulary but present string, e.g. "moderator", is NOT rejected —
+  // it is normalised to "candidate", asserted separately below).
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, declaredSpeaker: undefined }),
+    null,
+    "a missing declaredSpeaker must be rejected"
+  );
+  assert.equal(
+    normaliseSessionRecord({ ...validRaw, declaredSpeaker: 1 }),
+    null,
+    "a non-string declaredSpeaker must be rejected"
+  );
+
+  // A well-formed record normalises successfully with every field intact.
+  const normalised = normaliseSessionRecord(validRaw);
+  assert.ok(normalised, "a valid record must normalise, not return null");
+  assert.deepEqual(normalised, {
+    sessionId: "s1",
+    startedAt: 1000,
+    clockOrigin: 0,
+    declaredSpeaker: "candidate",
+    mimeType: "audio/webm",
+    status: "stopped",
+    durationMs: 5000,
+    sizeBytes: 100,
+  });
+
+  // An out-of-vocabulary declaredSpeaker is present and a string, so it is
+  // not rejected — it is normalised to "candidate" per the guard's actual
+  // documented behaviour, not treated as invalid.
+  const withUnknownSpeaker = normaliseSessionRecord({ ...validRaw, declaredSpeaker: "moderator" });
+  assert.ok(withUnknownSpeaker, "an out-of-vocabulary but present declaredSpeaker must not be rejected");
+  assert.equal(withUnknownSpeaker?.declaredSpeaker, "candidate");
 }
 
 // 04-15: recoveredEndMs (D-29) — the closing boundary as a pure function.

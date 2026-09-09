@@ -11,7 +11,8 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "check": "tsx scripts/check-tag-track.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
