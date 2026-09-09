@@ -689,8 +689,14 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       // zero chunks. If the section unmounted while that write was in
       // flight, the row must not be left behind — it would otherwise
       // survive to falsely trigger the crash-recovery prompt on next load.
+      //
+      // Only a row this call actually originated may be deleted. On a resume
+      // `sessionId` is the RECOVERED take's id and createSession re-marked
+      // that existing row "recording" rather than creating anything — so
+      // deleting here would destroy the very audio crash recovery exists to
+      // preserve. A resumed take's row is left exactly as recovery found it.
       if (cancelledRef.current) {
-        await deleteSession(sessionId);
+        if (!resumeSeed) await deleteSession(sessionId);
         db.close();
         dbRef.current = null;
         return;
@@ -735,7 +741,12 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       // before startRecorder threw, that row must not survive this failed
       // attempt — left behind, it falsely triggers the crash-recovery
       // prompt on the next load for what was actually a normal failure.
-      if (dbRef.current && sessionId) {
+      //
+      // Never on a resume, though: there `sessionId` names the recovered
+      // take, whose chunks deleteSession would take with it. A resume that
+      // fails to start must leave the crashed take exactly where it was, so
+      // the operator can try again or save it as-is.
+      if (dbRef.current && sessionId && !resumeSeed) {
         await deleteSession(sessionId);
       }
       dbRef.current?.close();
