@@ -16,3 +16,8 @@ coverage/
 .gsd/
 CLAUDE.md
 AGENTS.md
+
+# Installed agent skills and their lockfile. Local tooling, not product code —
+# each machine installs what it wants via `npx skills add`.
+.agents/
+skills-lock.json
