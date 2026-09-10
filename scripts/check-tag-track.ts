@@ -846,11 +846,21 @@ const SAMPLE_MS = 50;
   }
 }
 
-// subdivideSpan returns one window for a 20s span (under MAX_WINDOW_MS).
+// subdivideSpan returns exactly one window for any span at or under
+// MAX_WINDOW_MS. Derived from the constant rather than a literal duration:
+// MAX_WINDOW_MS is the latency knob and is expected to be retuned, and an
+// assertion hardcoding "20s is one window" only tests the contract while the
+// constant happens to exceed 20s.
 {
-  const span: TagSpan = { startMs: 0, endMs: 20000, speaker: "candidate" };
-  const windows = subdivideSpan(span, MAX_WINDOW_MS, WINDOW_OVERLAP_MS);
-  assert.deepEqual(windows, [{ startMs: 0, endMs: 20000, speaker: "candidate" }]);
+  for (const endMs of [MAX_WINDOW_MS, MAX_WINDOW_MS - 1]) {
+    const span: TagSpan = { startMs: 0, endMs, speaker: "candidate" };
+    const windows = subdivideSpan(span, MAX_WINDOW_MS, WINDOW_OVERLAP_MS);
+    assert.deepEqual(
+      windows,
+      [{ startMs: 0, endMs, speaker: "candidate" }],
+      `a ${endMs}ms span (<= MAX_WINDOW_MS ${MAX_WINDOW_MS}) must yield exactly one window`
+    );
+  }
 }
 
 // subdivideSpan on a 70s span returns windows none longer than

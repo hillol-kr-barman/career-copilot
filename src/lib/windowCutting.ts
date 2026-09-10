@@ -20,12 +20,40 @@ import type { TagSpan, TranscriptWindow } from "../types";
 export const SPAN_FLOOR_MS = 1800;
 
 /**
- * Whisper's native window is 30s; 25s leaves room for `WINDOW_OVERLAP_MS`
- * without engaging the pipeline's own internal chunking, which would change
- * the timestamp-relative-to-buffer semantics `05-RESEARCH.md` Pattern 3
- * depends on.
+ * The latency knob, and the only one that matters.
+ *
+ * Must stay under Whisper's native 30s window with room for
+ * `WINDOW_OVERLAP_MS`, so the pipeline's own internal chunking never engages —
+ * that would change the timestamp-relative-to-buffer semantics
+ * `05-RESEARCH.md` Pattern 3 depends on. Both 25s and 8s satisfy that; the
+ * choice between them is latency against context.
+ *
+ * A window is only dispatched once it closes (`eligibleWindows`), so in an
+ * uninterrupted turn this value IS the dominant term in how long a line takes
+ * to appear:
+ *
+ *   first line ≈ MAX_WINDOW_MS + SPAN_FLOOR_MS + inference
+ *
+ * Inference is flat at ~3-5s per call no matter how long the window is,
+ * because Whisper pads every window to 30s internally (measured: 2.66s of
+ * audio takes ~3.1-4.4s, 18.9s takes ~4.6s). So shrinking the window buys
+ * latency almost for free — it does NOT cost proportionally more compute — but
+ * it does raise the duty cycle, since each shorter window still costs a full
+ * call:
+ *
+ *   25s -> first line ~32s, ~20% duty      8s -> first line ~15s, ~63% duty
+ *   12s -> first line ~19s, ~42% duty      6s -> first line ~13s, ~83% duty
+ *
+ * 8s is the chosen balance. Going much below it stops keeping up with live
+ * speech, and every reduction gives the model less context to disambiguate
+ * with, so accuracy softens as this shrinks.
+ *
+ * Lowering this was only safe once 05-04's energy gate existed: shorter
+ * windows contain proportionally more near-silence, and near-silence is
+ * exactly what makes Whisper invent text. Do not reduce this further without
+ * that gate in place and a real-microphone check of the result.
  */
-export const MAX_WINDOW_MS = 25000;
+export const MAX_WINDOW_MS = 8000;
 
 /** Enough context that a word straddling a sub-window seam is transcribed whole in at least one of them. */
 export const WINDOW_OVERLAP_MS = 2000;
