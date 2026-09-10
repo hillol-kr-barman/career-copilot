@@ -1,5 +1,31 @@
 import { downsampleTo16k } from "./audioResample";
-import workletUrl from "./pcmTap.worklet.ts?worker&url";
+import builtWorkletUrl from "./pcmTap.worklet.ts?worker&url";
+
+/**
+ * The URL handed to `audioWorklet.addModule()`, which differs between dev and
+ * a production build and cannot be a single specifier.
+ *
+ * `?worker&url` is the only query that gets the worklet transpiled AND emitted
+ * as a standalone chunk by `vite build` — the production chunk is a
+ * self-contained IIFE with no imports, exactly what `AudioWorkletGlobalScope`
+ * requires. But in dev that same query resolves to
+ * `/src/lib/pcmTap.worklet.ts?worker_file&type=module`, and Vite prepends its
+ * worker env preamble (`import "/@vite/env"`) to anything served under
+ * `worker_file`. `AudioWorkletGlobalScope` cannot resolve a static import, so
+ * `addModule()` rejects and the tap never starts — silently, because D-39
+ * isolates a tap failure from the recording.
+ *
+ * Stripping the query in dev yields `/src/lib/pcmTap.worklet.ts`, which Vite
+ * serves as transpiled JS with no preamble. Both environments therefore get a
+ * module the worklet scope can actually evaluate.
+ *
+ * Verified in both: the production chunk begins `(function(){"use strict";
+ * class i extends AudioWorkletProcessor`, and the dev module begins
+ * `const BLOCK_SIZE = 4096;` with no import statement.
+ */
+const workletUrl = import.meta.env.DEV
+  ? builtWorkletUrl.split("?")[0]
+  : builtWorkletUrl;
 
 /**
  * D-39's second consumer on an already-acquired `MediaStream` — a live
