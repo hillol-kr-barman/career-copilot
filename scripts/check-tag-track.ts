@@ -40,6 +40,7 @@ import {
   MAX_WINDOW_MS,
   WINDOW_OVERLAP_MS,
   SILENCE_FRAME_MS,
+  SILENCE_FLOOR_RMS,
   mergeSubFloorSpans,
   subdivideSpan,
   planWindows,
@@ -708,6 +709,45 @@ const SAMPLE_MS = 50;
   assert.ok(
     Math.abs(result - 1) < 1e-6,
     `peakFrameRms must return the loud frame's own level (~1), not the average across all frames, got ${result}`
+  );
+}
+
+// Task 1 (T-05-12): the energy gate's whole contract in three cases — a
+// buffer of pure silence, a buffer of room-tone-level noise (still under the
+// floor), and a buffer that is silent except for one 200ms speech-level
+// burst. The gate must clear the third and reject the first two; this is
+// exactly why the measurement is a per-frame peak and not a mean.
+{
+  const silence = new Float32Array(TARGET_SAMPLE_RATE).fill(0); // 1s of pure silence
+  const peak = peakFrameRms(silence, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+  assert.ok(peak < SILENCE_FLOOR_RMS, `pure silence must score below SILENCE_FLOOR_RMS, got ${peak}`);
+}
+
+{
+  // Low-amplitude pseudo-random noise (deterministic LCG, no external RNG
+  // dependency) — realistic room tone, not literal zero, but still well
+  // under the floor.
+  const roomTone = new Float32Array(TARGET_SAMPLE_RATE);
+  let seed = 42;
+  for (let i = 0; i < roomTone.length; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    roomTone[i] = (seed / 0x7fffffff - 0.5) * 0.01; // amplitude ~0.005, well under the 0.012 floor
+  }
+  const peak = peakFrameRms(roomTone, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+  assert.ok(peak < SILENCE_FLOOR_RMS, `room-tone-level noise must score below SILENCE_FLOOR_RMS, got ${peak}`);
+}
+
+{
+  // Silent except for a 200ms speech-level burst — must clear the floor
+  // because peakFrameRms is a maximum over frames, not an average.
+  const samples = new Float32Array(TARGET_SAMPLE_RATE * 2).fill(0); // 2s
+  const burstSamples = Math.round((200 / 1000) * TARGET_SAMPLE_RATE);
+  const burstStart = TARGET_SAMPLE_RATE; // 1s in
+  samples.fill(0.3, burstStart, burstStart + burstSamples); // speech-level amplitude
+  const peak = peakFrameRms(samples, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+  assert.ok(
+    peak >= SILENCE_FLOOR_RMS,
+    `a 200ms speech-level burst inside otherwise-silent audio must score at or above SILENCE_FLOOR_RMS, got ${peak}`
   );
 }
 

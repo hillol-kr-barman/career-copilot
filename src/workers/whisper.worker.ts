@@ -1,5 +1,7 @@
 import { env, pipeline } from "@huggingface/transformers";
 import type { Speaker } from "../types";
+import { peakFrameRms, sliceByTime, TARGET_SAMPLE_RATE } from "../lib/audioResample";
+import { SILENCE_FLOOR_RMS, SILENCE_FRAME_MS } from "../lib/windowCutting";
 
 /**
  * The self-hosted Whisper transcription worker (LIVE-10, D-39). Configured
@@ -64,7 +66,17 @@ export type WhisperResponse =
   // selected (see `pickAsrDevice()` below) — a `"webgpu" | "wasm"` union
   // here would be a lie the caller could branch on.
   | { type: "ready"; device: "wasm" }
-  | { type: "result"; id: string; windowStartMs: number; speaker: Speaker; chunks: WhisperResultChunk[] }
+  | {
+      type: "result";
+      id: string;
+      windowStartMs: number;
+      speaker: Speaker;
+      chunks: WhisperResultChunk[];
+      /** T-05-12: true when the whole-window pre-gate skipped inference entirely — an ungated window and a gated one are both "this window is finished", only one has text. */
+      gated: boolean;
+      /** T-05-12: how many chunks the pipeline returned that the per-chunk post-gate then dropped as silent — reported so a quiet stretch is surfaced, not swallowed. */
+      silentChunks: number;
+    }
   | { type: "error"; id?: string; message: string };
 
 /**
@@ -144,9 +156,26 @@ async function loadModel(): Promise<void> {
  * `chunk_length_s`/`stride_length_s` left unset (see the module doc comment
  * on `HARD_MAX_SAMPLES`). Converts each returned chunk's relative seconds to
  * absolute milliseconds by adding `windowStartMs`, and posts one `result`
- * carrying every chunk. A failure here posts an `error` scoped to this
- * window's `id` — never a fatal error — so one bad window cannot end the
- * session.
+ * carrying every surviving chunk. A failure here posts an `error` scoped to
+ * this window's `id` — never a fatal error — so one bad window cannot end
+ * the session.
+ *
+ * T-05-12, gated on both sides of the model:
+ * - **Pre-gate.** A window whose loudest `SILENCE_FRAME_MS` frame never
+ *   clears `SILENCE_FLOOR_RMS` is treated as silence and the pipeline is not
+ *   invoked at all — Whisper's well-documented habit of inventing fluent
+ *   text for near-silent audio makes this load-bearing, not an optimisation
+ *   (05-RESEARCH.md Pitfall 3). This also removes the largest single WASM
+ *   cost on the most common window content in a real interview: a pause.
+ * - **Post-gate.** A window can clear the whole-window floor on one loud
+ *   sentence and still end in room tone — exactly where the model appends a
+ *   fluent, invented sentence. Each returned chunk's own time range is
+ *   sliced back out of the window PCM and gated independently.
+ *
+ * Both floors come from `windowCutting.ts`'s own constants — this worker
+ * never declares a second threshold. Either gate leaves the session's
+ * dispatch bookkeeping unaffected: a gated window is a completed window, it
+ * simply carries no text.
  */
 async function transcribeWindow(request: {
   id: string;
@@ -172,6 +201,20 @@ async function transcribeWindow(request: {
     return;
   }
 
+  const windowPeakRms = peakFrameRms(request.pcm, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+  if (windowPeakRms < SILENCE_FLOOR_RMS) {
+    workerScope.postMessage({
+      type: "result",
+      id: request.id,
+      windowStartMs: request.windowStartMs,
+      speaker: request.speaker,
+      chunks: [],
+      gated: true,
+      silentChunks: 0,
+    });
+    return;
+  }
+
   try {
     // 05-07 engine-fix: `language`/`task` passed explicitly. This did not
     // fix the garbage-output bug (the runtime/dtype/device combination did)
@@ -183,17 +226,28 @@ async function transcribeWindow(request: {
       language: "en",
       task: "transcribe",
     });
-    const chunks: WhisperResultChunk[] = (output.chunks ?? []).map((chunk) => ({
-      text: chunk.text,
-      startMs: request.windowStartMs + chunk.timestamp[0] * 1000,
-      endMs: request.windowStartMs + chunk.timestamp[1] * 1000,
-    }));
+    const rawChunks = output.chunks ?? [];
+    const chunks: WhisperResultChunk[] = [];
+    let silentChunks = 0;
+    for (const chunk of rawChunks) {
+      const startMs = request.windowStartMs + chunk.timestamp[0] * 1000;
+      const endMs = request.windowStartMs + chunk.timestamp[1] * 1000;
+      const chunkPcm = sliceByTime(request.pcm, request.windowStartMs, startMs, endMs, TARGET_SAMPLE_RATE);
+      const chunkPeakRms = peakFrameRms(chunkPcm, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+      if (chunkPeakRms < SILENCE_FLOOR_RMS) {
+        silentChunks++;
+        continue;
+      }
+      chunks.push({ text: chunk.text, startMs, endMs });
+    }
     workerScope.postMessage({
       type: "result",
       id: request.id,
       windowStartMs: request.windowStartMs,
       speaker: request.speaker,
       chunks,
+      gated: false,
+      silentChunks,
     });
   } catch (err) {
     workerScope.postMessage({
