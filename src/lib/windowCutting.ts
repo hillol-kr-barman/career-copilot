@@ -158,6 +158,43 @@ export function planWindows(
 }
 
 /**
+ * The subset of `planWindows`' output that is safe to dispatch right now —
+ * regression fix for a live-tick dispatch bug (see `transcriptionSession.ts`
+ * `dispatchWindowsUpTo`). While `boundaryMs` is a live settling cursor (not
+ * the take's true end), `deriveSpans` always ends its last span exactly at
+ * `boundaryMs`, so the *last* window `planWindows` returns is tied to that
+ * still-growing span and can change identity on a later call — `subdivideSpan`
+ * can re-fold or re-split it as the span keeps growing. Dispatching it early
+ * (the original bug: deduping on `startMs` alone) both under-transcribes the
+ * eventual window and permanently blocks the correctly-sized window that
+ * later shares its `startMs`.
+ *
+ * Every window BEFORE that trailing one is immutable the instant it is
+ * returned: its boundaries come from either an already-closed span (fixed
+ * forever — a press timestamp never changes) or an interior `maxWindowMs`
+ * cut inside the still-open span, and once `subdivideSpan` decides not to
+ * fold a boundary back (`remainderMs >= overlapMs`), further growth of the
+ * open span only grows `remainderMs` further — it never un-decides that cut.
+ * So excluding just the trailing window guarantees no window is ever
+ * surfaced before its `endMs` is final, without ever re-deriving spans
+ * differently from `deriveSpans`/`mergeSubFloorSpans`.
+ *
+ * Pass `final: true` only when `boundaryMs` is the take's true end (nothing
+ * can grow further, e.g. `finish()`'s call) — then every window, including
+ * the last, is eligible.
+ */
+export function eligibleWindows(
+  spans: TagSpan[],
+  floorMs: number,
+  maxWindowMs: number,
+  overlapMs: number,
+  final: boolean
+): TranscriptWindow[] {
+  const windows = planWindows(spans, floorMs, maxWindowMs, overlapMs);
+  return final ? windows : windows.slice(0, Math.max(0, windows.length - 1));
+}
+
+/**
  * The overlap de-duplication rule, expressed on midpoints: keep an item when
  * `(startMs + endMs) / 2 >= previousEndMs`. Midpoint rather than `startMs`
  * because a sentence that begins inside the overlap but mostly lives after
