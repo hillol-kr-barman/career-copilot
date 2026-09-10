@@ -1,7 +1,7 @@
 import type { Speaker, TagPress, TranscriptSegment } from "../types";
 import { openRecordingDB, deriveSpans, updateSessionTranscriptState } from "./recordingStore";
 import { appendSegment, nextSegmentSeq } from "./transcriptStore";
-import { eligibleWindows, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS } from "./windowCutting";
+import { eligibleWindows, dropSeamDuplicates, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS } from "./windowCutting";
 import { sliceByTime, TARGET_SAMPLE_RATE } from "./audioResample";
 import { createAudioTap } from "./audioTap";
 import type { WhisperRequest, WhisperResponse } from "../workers/whisper.worker";
@@ -35,6 +35,10 @@ export interface TranscriptionStatus {
   lagMs: number;
   /** Total ms of audio that could not be buffered while the model was loading (D-44). */
   backlogDroppedMs: number;
+  /** T-05-12: total windows the whole-window pre-gate skipped as silent, across the take so far. */
+  gatedWindows: number;
+  /** T-05-12: total chunks the per-chunk post-gate dropped as silent, across the take so far. */
+  silentChunksDropped: number;
   // 05-07 engine-fix: single-valued now that the worker's pickAsrDevice()
   // never selects WebGPU (see src/workers/whisper.worker.ts) — a
   // "webgpu" | "wasm" union here would be a lie a caller could branch on.
@@ -93,6 +97,8 @@ export async function startTranscriptionSession(
       phase: "failed",
       lagMs: 0,
       backlogDroppedMs: 0,
+      gatedWindows: 0,
+      silentChunksDropped: 0,
       message: "Could not open storage for the transcript. The recording itself is unaffected.",
     });
     return null;
@@ -113,11 +119,33 @@ export async function startTranscriptionSession(
   // dispatched, and a still-open window never enters this set at all.
   const dispatchedWindowKeys = new Set<string>();
   const pendingWindowIds = new Set<string>();
+  // T-05-13: per-dispatched-window metadata (its own endMs and which span it
+  // belongs to), keyed by request id — populated in `dispatchWindowsUpTo`,
+  // read back in `handleResult`. Results can arrive out of order (a gated
+  // window returns near-instantly while a 25s window is still inferring),
+  // so this is the only reliable way to know a result's span once it lands.
+  const pendingWindowMeta = new Map<string, { endMs: number; spanStartMs: number }>();
+  // T-05-13: the highest chunk `endMs` already accepted (post-dedup) per
+  // span, keyed by that span's own `startMs`. A brand-new span key starts
+  // absent from this map — reads as 0 below — which is the "reset at a span
+  // boundary" D-46/D-47 requires: the first line of a new speaker's turn
+  // must never be mistaken for a seam duplicate of the previous speaker.
+  const spanWrittenEndMs = new Map<number, number>();
 
   let nextSeq = await nextSegmentSeq(sessionId);
   let dispatchedThroughMs = 0;
+  // T-05-13: the highest point in the take's timeline the transcript is
+  // provably caught up through — not just the highest WRITTEN segment end.
+  // Advanced by every processed result, gated or not, to the window's own
+  // endMs (see `handleResult`), so a long silent stretch (all gated
+  // windows, no segments at all) still reads as "caught up", not as a
+  // stalled transcriber (D-57).
   let newestSegmentEndMs = 0;
   let backlogDroppedMs = 0;
+  // T-05-12/T-05-13: folded from each result's own `gated`/`silentChunks`
+  // fields into the session status (Task 1's gate surfaced, not swallowed).
+  let gatedWindows = 0;
+  let silentChunksDropped = 0;
   let anyWindowErrored = false;
   let workerReady = false;
   let workerDead = false;
@@ -133,6 +161,8 @@ export async function startTranscriptionSession(
       phase,
       lagMs: Math.max(0, clock() - newestSegmentEndMs),
       backlogDroppedMs,
+      gatedWindows,
+      silentChunksDropped,
       device: modelDevice,
       message,
     });
@@ -197,6 +227,8 @@ export async function startTranscriptionSession(
       phase: "failed",
       lagMs: 0,
       backlogDroppedMs: 0,
+      gatedWindows: 0,
+      silentChunksDropped: 0,
       message: "The microphone tap for transcription could not be created. The recording itself is unaffected.",
     });
     db.close();
@@ -218,7 +250,21 @@ export async function startTranscriptionSession(
     const windows = eligibleWindows(spans, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS, options.final);
     const bufferEndMs = bufferStartMs + (bufferSampleCount / TARGET_SAMPLE_RATE) * 1000;
 
-    for (const window of windows) {
+    // T-05-13: which span each window belongs to, walked fresh from this
+    // call's own windows array. `eligibleWindows` guarantees every window
+    // before the trailing one is immutable once returned, so this prefix is
+    // stable call over call — consecutive sub-windows of one span overlap
+    // by `WINDOW_OVERLAP_MS`, so a window whose `startMs` lands at or past
+    // the previous window's `endMs` is always the first sub-window of the
+    // NEXT merged span, never a continuation of the current one.
+    let spanStartMs = windows.length > 0 ? windows[0].startMs : 0;
+
+    for (let i = 0; i < windows.length; i++) {
+      const window = windows[i];
+      if (i > 0 && window.startMs >= windows[i - 1].endMs) {
+        spanStartMs = window.startMs;
+      }
+
       const key = `${window.startMs}:${window.endMs}`;
       if (dispatchedWindowKeys.has(key)) continue;
       if (window.endMs > bufferEndMs) continue; // not yet fully buffered — retried on a later tick
@@ -232,6 +278,7 @@ export async function startTranscriptionSession(
 
       const id = crypto.randomUUID();
       pendingWindowIds.add(id);
+      pendingWindowMeta.set(id, { endMs: window.endMs, spanStartMs });
       const request: WhisperRequest = {
         type: "transcribe",
         id,
@@ -247,24 +294,51 @@ export async function startTranscriptionSession(
 
   async function handleResult(message: Extract<WhisperResponse, { type: "result" }>) {
     pendingWindowIds.delete(message.id);
-    for (const chunk of message.chunks) {
-      const segment: TranscriptSegment = {
-        sessionId,
-        seq: nextSeq++,
-        startMs: chunk.startMs,
-        endMs: chunk.endMs,
-        speaker: message.speaker,
-        text: chunk.text,
-        windowStartMs: message.windowStartMs,
-      };
-      try {
-        if (db) await appendSegment(db, segment);
-        if (segment.endMs > newestSegmentEndMs) newestSegmentEndMs = segment.endMs;
-        onSegment(segment);
-      } catch {
-        anyWindowErrored = true;
+    const meta = pendingWindowMeta.get(message.id);
+    pendingWindowMeta.delete(message.id);
+
+    if (message.gated) gatedWindows++;
+    silentChunksDropped += message.silentChunks;
+
+    if (meta) {
+      // T-05-13: dedupe against the highest end actually WRITTEN so far for
+      // this span — not against "the previous dispatch". Results can arrive
+      // out of order (a gated window returns near-instantly while a 25s
+      // window ahead of it is still inferring), so dispatch order is not a
+      // safe ordering cue; a result for a window this session has no
+      // metadata for (already superseded, or a stray duplicate message) is
+      // ignored below rather than guessed at.
+      const previousWrittenEndMs = spanWrittenEndMs.get(meta.spanStartMs) ?? 0;
+      const dedupedChunks = dropSeamDuplicates(message.chunks, previousWrittenEndMs);
+
+      for (const chunk of dedupedChunks) {
+        const segment: TranscriptSegment = {
+          sessionId,
+          seq: nextSeq++,
+          startMs: chunk.startMs,
+          endMs: chunk.endMs,
+          speaker: message.speaker,
+          text: chunk.text,
+          windowStartMs: message.windowStartMs,
+        };
+        try {
+          if (db) await appendSegment(db, segment);
+          onSegment(segment);
+        } catch {
+          anyWindowErrored = true;
+        }
       }
+
+      // The window's own endMs proves coverage through that point even when
+      // it produced no (or no surviving) chunks — a gated or all-silent
+      // window still means "the transcript is caught up to here", which is
+      // exactly what the NEXT sub-window's seam rule needs and what keeps a
+      // long quiet stretch from reading as a stalled transcriber (D-57).
+      const coveredThroughMs = dedupedChunks.reduce((max, chunk) => Math.max(max, chunk.endMs), meta.endMs);
+      spanWrittenEndMs.set(meta.spanStartMs, Math.max(previousWrittenEndMs, coveredThroughMs));
+      if (coveredThroughMs > newestSegmentEndMs) newestSegmentEndMs = coveredThroughMs;
     }
+
     lastActivityAt = clock();
     if (!finished && !aborted) {
       phase = "live";

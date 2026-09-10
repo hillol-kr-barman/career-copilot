@@ -890,6 +890,58 @@ const SAMPLE_MS = 50;
   }
 }
 
+// Composition (Task 2, T-05-13): `subdivideSpan` + `dropSeamDuplicates`,
+// applied exactly the way `transcriptionSession.ts`'s dispatch/result loop
+// composes them — one `dropSeamDuplicates` call per sub-window's own chunk
+// list, against the running written-end high-water mark for the span — must
+// turn a 70s span's overlapping sub-windows into a strictly increasing,
+// non-overlapping sequence of chunk ranges covering the span exactly once.
+//
+// Chunk boundaries are drawn from one absolute 1s grid shared by every
+// window (rather than a per-window cursor), so two overlapping windows that
+// both cover the same underlying second of audio report IDENTICAL chunk
+// boundaries for it — the only way to prove "exactly once" mathematically,
+// since `dropSeamDuplicates` decides keep/drop by midpoint and never trims a
+// kept item's own boundaries.
+{
+  const span: TagSpan = { startMs: 0, endMs: 70000, speaker: "candidate" };
+  const windows = subdivideSpan(span, MAX_WINDOW_MS, WINDOW_OVERLAP_MS);
+  assert.ok(windows.length > 1, "a 70s span must be subdivided into more than one sub-window for this composition to be meaningful");
+
+  const GRID_MS = 1000;
+  const gridChunks: { startMs: number; endMs: number }[] = [];
+  for (let t = span.startMs; t < span.endMs; t += GRID_MS) {
+    gridChunks.push({ startMs: t, endMs: Math.min(t + GRID_MS, span.endMs) });
+  }
+  const chunksForWindow = (window: { startMs: number; endMs: number }) =>
+    gridChunks.filter((c) => c.startMs >= window.startMs && c.endMs <= window.endMs);
+
+  let writtenEndMs = 0;
+  const accepted: { startMs: number; endMs: number }[] = [];
+  for (const window of windows) {
+    const chunks = chunksForWindow(window);
+    const kept = dropSeamDuplicates(chunks, writtenEndMs);
+    accepted.push(...kept);
+    const coveredThroughMs = kept.reduce((max, c) => Math.max(max, c.endMs), window.endMs);
+    writtenEndMs = Math.max(writtenEndMs, coveredThroughMs);
+  }
+
+  assert.deepEqual(
+    accepted,
+    gridChunks,
+    "the composed dispatch/dedupe loop must reconstruct the span's full grid exactly once, with no gap and no duplicate"
+  );
+  for (let i = 1; i < accepted.length; i++) {
+    assert.equal(
+      accepted[i].startMs,
+      accepted[i - 1].endMs,
+      `accepted coverage must be strictly contiguous — gap or overlap between ${JSON.stringify(accepted[i - 1])} and ${JSON.stringify(accepted[i])}`
+    );
+  }
+  assert.equal(accepted[0].startMs, span.startMs, "coverage must start exactly at the span's own start");
+  assert.equal(accepted[accepted.length - 1].endMs, span.endMs, "coverage must end exactly at the span's own end");
+}
+
 // Regression: `dispatchWindowsUpTo` (transcriptionSession.ts) must never
 // silently skip audio while a span is still open. The bug this guards
 // against: deduping dispatched windows on `startMs` alone burned that key
