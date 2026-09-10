@@ -291,12 +291,24 @@ async function startServer() {
             useDefaults: true,
             directives: {
               defaultSrc: ["'self'"],
-              scriptSrc: ["'self'"],
+              // 'wasm-unsafe-eval' permits WebAssembly compilation and
+              // instantiation only — it does NOT re-enable eval() or
+              // new Function(), so the no-inline-script control that actually
+              // protects the localStorage API key is unchanged. Needed by the
+              // Phase 5 in-browser Whisper transcriber (onnxruntime-web/WASM).
+              scriptSrc: ["'self'", "'wasm-unsafe-eval'"],
               styleSrc: ["'self'", "'unsafe-inline'"],
               imgSrc: ["'self'", "data:"],
               connectSrc: ["'self'"],
               objectSrc: ["'none'"],
               frameAncestors: ["'self'"],
+              // Not present in helmet's defaults, so it would otherwise fall
+              // back to defaultSrc. Named explicitly so a later change is a
+              // one-line, reviewable diff. The Phase 5 transcription worker
+              // and its AudioWorklet module are both same-origin bundle
+              // chunks emitted by Vite, so 'self' is sufficient — no CDN,
+              // no blob: (see server.ts's Phase 5 CSP comment history).
+              workerSrc: ["'self'"],
               // Deliberately dropped from helmet's defaults: this server is
               // commonly run on plain http behind a TLS-terminating proxy, and
               // upgrading same-origin asset requests to https there breaks
