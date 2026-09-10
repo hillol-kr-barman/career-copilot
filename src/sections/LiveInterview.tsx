@@ -10,8 +10,8 @@ import { MicSetup } from "../components/MicSetup";
 import { TranscriptView } from "../components/TranscriptView";
 import { startTranscriptionSession } from "../lib/transcriptionSession";
 import type { TranscriptionSessionHandle, TranscriptionStatus } from "../lib/transcriptionSession";
-import { readSegments } from "../lib/transcriptStore";
-import { groupIntoTurns } from "../lib/transcriptTurns";
+import { readSegments, applyResolvedSpeakers } from "../lib/transcriptStore";
+import { groupIntoTurns, moveTurnBoundary } from "../lib/transcriptTurns";
 import {
   acquireMic,
   stopStream,
@@ -182,6 +182,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   // `warnings` array RecordingControls already renders — never through
   // `setError`, which would wrongly imply the recording itself is at risk.
   const [transcriptionWarning, setTranscriptionWarning] = useState<string | null>(null);
+  // D-50/LIVE-13: keyed by the clicked segment's `seq`, mirroring the
+  // `downloading`/`deletingIds` shape — guards a double-click on the same
+  // line from firing the correction twice while its write is in flight.
+  const [correctingSeqs, setCorrectingSeqs] = useState<Record<number, boolean>>({});
 
   // This chain gates on browser capability only, never on resume, job
   // description or API key — Tool 4 needs no key at all.
@@ -1070,6 +1074,55 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     }
   };
 
+  /**
+   * D-50/LIVE-13: moves a turn boundary to the clicked segment. Only
+   * reachable once `canCorrect` gates `TranscriptView` to true (D-51 — a
+   * stopped take with segments), so `session` and `transcriptSegments` are
+   * guaranteed present by the time `TranscriptView` can even call this.
+   *
+   * Computes the new attribution with the pure, already-asserted
+   * `moveTurnBoundary` — never reimplemented here or in the component — then
+   * writes only the segments whose `resolvedSpeaker` actually changed,
+   * keyed by `seq` (never by text: two segments in one interview can easily
+   * carry identical text, and correcting one must not touch the other).
+   *
+   * Nothing here writes to the recorded tag track, touches the `tags`
+   * store, a segment's own `speaker` field, or the sidecar (D-49, D-54):
+   * this is a read-modify-write of the segment record only, and the
+   * recorded tag track goes on describing the room exactly as it was
+   * pressed.
+   *
+   * On success, the recomputed segments replace on-screen state so the
+   * turns re-group immediately. On failure, the on-screen state is left
+   * untouched and the error surfaces through the existing error band —
+   * never a correction that appears applied but was not stored.
+   */
+  const handleMoveBoundary = async (seq: number) => {
+    if (!session || status !== "stopped" || transcriptSegments.length === 0) return;
+    if (correctingSeqs[seq]) return;
+    setError("");
+    setCorrectingSeqs((prev) => ({ ...prev, [seq]: true }));
+    try {
+      const recomputed = moveTurnBoundary(transcriptSegments, seq);
+      const updates: { seq: number; resolvedSpeaker: Speaker }[] = [];
+      for (let i = 0; i < recomputed.length; i++) {
+        const next = recomputed[i];
+        const prev = transcriptSegments[i];
+        if (prev.seq === next.seq && next.resolvedSpeaker !== undefined && next.resolvedSpeaker !== prev.resolvedSpeaker) {
+          updates.push({ seq: next.seq, resolvedSpeaker: next.resolvedSpeaker });
+        }
+      }
+      if (updates.length > 0) {
+        await applyResolvedSpeakers(session.sessionId, updates);
+      }
+      setTranscriptSegments(recomputed);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the speaker correction.");
+    } finally {
+      setCorrectingSeqs((prev) => ({ ...prev, [seq]: false }));
+    }
+  };
+
   const warnings: RecordingWarning[] = [];
   if (transcriptionWarning) {
     warnings.push({ id: "transcription", message: transcriptionWarning });
@@ -1186,6 +1239,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
               status={transcriptionStatus}
               isRecording={status === "recording"}
               skippedCount={transcriptSkippedCount}
+              canCorrect={status === "stopped" && transcriptSegments.length > 0}
+              onMoveBoundary={handleMoveBoundary}
             />
           </>
         )}
