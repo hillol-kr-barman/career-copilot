@@ -1,7 +1,7 @@
 import type { Speaker, TagPress, TranscriptSegment } from "../types";
 import { openRecordingDB, deriveSpans, updateSessionTranscriptState } from "./recordingStore";
 import { appendSegment, nextSegmentSeq } from "./transcriptStore";
-import { planWindows, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS } from "./windowCutting";
+import { eligibleWindows, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS } from "./windowCutting";
 import { sliceByTime, TARGET_SAMPLE_RATE } from "./audioResample";
 import { createAudioTap } from "./audioTap";
 import type { WhisperRequest, WhisperResponse } from "../workers/whisper.worker";
@@ -104,7 +104,11 @@ export async function startTranscriptionSession(
   let bufferSampleCount = 0;
 
   const presses: TagPress[] = [];
-  const dispatchedWindowStarts = new Set<number>();
+  // Keyed by `${startMs}:${endMs}`, never `startMs` alone (the regression
+  // this fixes) — `eligibleWindows` only ever surfaces a window once its
+  // boundaries are immutable, so a window's key never repeats once
+  // dispatched, and a still-open window never enters this set at all.
+  const dispatchedWindowKeys = new Set<string>();
   const pendingWindowIds = new Set<string>();
 
   let nextSeq = await nextSegmentSeq(sessionId);
@@ -198,17 +202,25 @@ export async function startTranscriptionSession(
 
   const worker = createWorker();
 
-  function dispatchWindowsUpTo(settledMs: number) {
-    const spans = deriveSpans(presses, settledMs);
-    const windows = planWindows(spans, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS);
+  /**
+   * Dispatches every FINAL window up to `boundaryMs` — see `eligibleWindows`
+   * in `windowCutting.ts` for why only a window that cannot change identity
+   * on a later call is ever surfaced here. `final: false` (the live tick)
+   * withholds the still-growing trailing window; `final: true` (`finish()`,
+   * where `boundaryMs` is the take's true end and nothing can grow further)
+   * dispatches everything, including that last window.
+   */
+  function dispatchWindowsUpTo(boundaryMs: number, options: { final: boolean }) {
+    const spans = deriveSpans(presses, boundaryMs);
+    const windows = eligibleWindows(spans, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS, options.final);
     const bufferEndMs = bufferStartMs + (bufferSampleCount / TARGET_SAMPLE_RATE) * 1000;
 
     for (const window of windows) {
-      if (window.endMs > settledMs) continue;
-      if (dispatchedWindowStarts.has(window.startMs)) continue;
-      if (window.endMs > bufferEndMs) continue; // not yet fully buffered
+      const key = `${window.startMs}:${window.endMs}`;
+      if (dispatchedWindowKeys.has(key)) continue;
+      if (window.endMs > bufferEndMs) continue; // not yet fully buffered — retried on a later tick
 
-      dispatchedWindowStarts.add(window.startMs);
+      dispatchedWindowKeys.add(key);
       dispatchedThroughMs = Math.max(dispatchedThroughMs, window.endMs);
 
       const buffer = materializeBuffer();
@@ -326,7 +338,7 @@ export async function startTranscriptionSession(
     if (workerReady && !workerDead) {
       const nowMs = clock();
       const settledMs = Math.max(0, nowMs - SPAN_FLOOR_MS);
-      dispatchWindowsUpTo(settledMs);
+      dispatchWindowsUpTo(settledMs, { final: false });
       if (phase === "live" && pendingWindowIds.size > 0 && nowMs - lastActivityAt > STALL_WARN_MS) {
         phase = "stalled";
       }
@@ -347,8 +359,9 @@ export async function startTranscriptionSession(
 
     if (workerReady && !workerDead) {
       // The real boundary — no settle subtraction, because no further press
-      // can arrive.
-      dispatchWindowsUpTo(finalMs);
+      // can arrive. `final: true` also dispatches the trailing window that
+      // every live tick withholds, since nothing can grow it further now.
+      dispatchWindowsUpTo(finalMs, { final: true });
     }
     phase = "draining";
     emitStatus();

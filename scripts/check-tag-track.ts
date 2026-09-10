@@ -41,6 +41,7 @@ import {
   mergeSubFloorSpans,
   subdivideSpan,
   planWindows,
+  eligibleWindows,
   dropSeamDuplicates,
 } from "../src/lib/windowCutting";
 import { effectiveSpeaker, groupIntoTurns, moveTurnBoundary } from "../src/lib/transcriptTurns";
@@ -844,6 +845,85 @@ const SAMPLE_MS = 50;
     const parent = spans.find((s) => window.startMs >= s.startMs && window.startMs < s.endMs);
     assert.ok(parent, `window ${JSON.stringify(window)} must fall inside one of the input spans`);
     assert.equal(window.speaker, parent?.speaker, "a window's speaker must match the span it came from");
+  }
+}
+
+// Regression: `dispatchWindowsUpTo` (transcriptionSession.ts) must never
+// silently skip audio while a span is still open. The bug this guards
+// against: deduping dispatched windows on `startMs` alone burned that key
+// on a tiny, still-growing sliver the first tick any part of a span
+// settled, then permanently skipped the correctly-sized final window that
+// later shared the same `startMs` — losing up to 92% of a take's audio (see
+// 05-03-SUMMARY.md). This simulates the real tick loop — one call to
+// `eligibleWindows` per second plus one final call, keyed by
+// `${startMs}:${endMs}` exactly as `transcriptionSession.ts` does — over a
+// 60s take with two spacebar switches, and asserts the union of dispatched
+// windows covers the whole timeline with no gaps, and that every real span's
+// speaker actually reaches the worker.
+{
+  const presses: TagPress[] = [
+    { sessionId: "s", tsMs: 20000, speaker: "candidate" },
+    { sessionId: "s", tsMs: 35000, speaker: "interviewer" },
+  ];
+  const TICK_MS = 1000;
+  const TAKE_END_MS = 60000;
+  const dispatched = new Set<string>();
+  const sent: { startMs: number; endMs: number; speaker: string }[] = [];
+
+  function tick(boundaryMs: number, final: boolean) {
+    const spans = deriveSpans(presses, boundaryMs);
+    const windows = eligibleWindows(spans, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS, final);
+    for (const w of windows) {
+      const key = `${w.startMs}:${w.endMs}`;
+      if (dispatched.has(key)) continue;
+      dispatched.add(key);
+      sent.push({ startMs: w.startMs, endMs: w.endMs, speaker: w.speaker });
+    }
+  }
+
+  for (let now = TICK_MS; now <= TAKE_END_MS; now += TICK_MS) {
+    tick(Math.max(0, now - SPAN_FLOOR_MS), false);
+  }
+  tick(TAKE_END_MS, true); // finish()'s final dispatch — nothing left to grow
+
+  // D-46: no dispatched window may span two speakers — every window must
+  // fall entirely inside one real span and carry that span's speaker.
+  const fullSpans = deriveSpans(presses, TAKE_END_MS);
+  for (const w of sent) {
+    const parent = fullSpans.find((s) => w.startMs >= s.startMs && w.startMs < s.endMs);
+    assert.ok(parent, `dispatched window ${JSON.stringify(w)} must fall inside a real span`);
+    assert.ok(
+      w.endMs <= (parent as TagSpan).endMs,
+      `dispatched window ${JSON.stringify(w)} must not extend past its span's end`
+    );
+    assert.equal(w.speaker, parent?.speaker, "a dispatched window's speaker must match the span it came from");
+  }
+
+  // Coverage: the union of dispatched windows must cover the entire take
+  // with no gap — a gap here is exactly the silently-skipped-audio bug.
+  const bySort = [...sent].sort((a, b) => a.startMs - b.startMs);
+  let coveredThroughMs = 0;
+  for (const w of bySort) {
+    assert.ok(
+      w.startMs <= coveredThroughMs,
+      `gap in dispatched coverage before ${w.startMs}ms (covered through ${coveredThroughMs}ms) — audio silently skipped`
+    );
+    coveredThroughMs = Math.max(coveredThroughMs, w.endMs);
+  }
+  assert.equal(
+    coveredThroughMs,
+    TAKE_END_MS,
+    `dispatched windows must cover the full ${TAKE_END_MS}ms take; only covered through ${coveredThroughMs}ms`
+  );
+
+  // Every real span's speaker must have actually reached the worker at
+  // least once — the original bug labelled one speaker and dropped the
+  // other's sentences entirely.
+  for (const span of fullSpans) {
+    const covered = sent.some(
+      (w) => w.speaker === span.speaker && w.startMs < span.endMs && w.endMs > span.startMs
+    );
+    assert.ok(covered, `span ${JSON.stringify(span)} never produced a dispatched window`);
   }
 }
 
