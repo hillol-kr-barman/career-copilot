@@ -40,6 +40,7 @@ import {
   MAX_WINDOW_MS,
   WINDOW_OVERLAP_MS,
   SILENCE_FRAME_MS,
+  SILENCE_FLOOR_RMS,
   mergeSubFloorSpans,
   subdivideSpan,
   planWindows,
@@ -711,6 +712,45 @@ const SAMPLE_MS = 50;
   );
 }
 
+// Task 1 (T-05-12): the energy gate's whole contract in three cases — a
+// buffer of pure silence, a buffer of room-tone-level noise (still under the
+// floor), and a buffer that is silent except for one 200ms speech-level
+// burst. The gate must clear the third and reject the first two; this is
+// exactly why the measurement is a per-frame peak and not a mean.
+{
+  const silence = new Float32Array(TARGET_SAMPLE_RATE).fill(0); // 1s of pure silence
+  const peak = peakFrameRms(silence, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+  assert.ok(peak < SILENCE_FLOOR_RMS, `pure silence must score below SILENCE_FLOOR_RMS, got ${peak}`);
+}
+
+{
+  // Low-amplitude pseudo-random noise (deterministic LCG, no external RNG
+  // dependency) — realistic room tone, not literal zero, but still well
+  // under the floor.
+  const roomTone = new Float32Array(TARGET_SAMPLE_RATE);
+  let seed = 42;
+  for (let i = 0; i < roomTone.length; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    roomTone[i] = (seed / 0x7fffffff - 0.5) * 0.01; // amplitude ~0.005, well under the 0.012 floor
+  }
+  const peak = peakFrameRms(roomTone, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+  assert.ok(peak < SILENCE_FLOOR_RMS, `room-tone-level noise must score below SILENCE_FLOOR_RMS, got ${peak}`);
+}
+
+{
+  // Silent except for a 200ms speech-level burst — must clear the floor
+  // because peakFrameRms is a maximum over frames, not an average.
+  const samples = new Float32Array(TARGET_SAMPLE_RATE * 2).fill(0); // 2s
+  const burstSamples = Math.round((200 / 1000) * TARGET_SAMPLE_RATE);
+  const burstStart = TARGET_SAMPLE_RATE; // 1s in
+  samples.fill(0.3, burstStart, burstStart + burstSamples); // speech-level amplitude
+  const peak = peakFrameRms(samples, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+  assert.ok(
+    peak >= SILENCE_FLOOR_RMS,
+    `a 200ms speech-level burst inside otherwise-silent audio must score at or above SILENCE_FLOOR_RMS, got ${peak}`
+  );
+}
+
 // sliceByTime returns exact boundaries.
 {
   const sampleRate = TARGET_SAMPLE_RATE;
@@ -848,6 +888,58 @@ const SAMPLE_MS = 50;
     assert.ok(parent, `window ${JSON.stringify(window)} must fall inside one of the input spans`);
     assert.equal(window.speaker, parent?.speaker, "a window's speaker must match the span it came from");
   }
+}
+
+// Composition (Task 2, T-05-13): `subdivideSpan` + `dropSeamDuplicates`,
+// applied exactly the way `transcriptionSession.ts`'s dispatch/result loop
+// composes them — one `dropSeamDuplicates` call per sub-window's own chunk
+// list, against the running written-end high-water mark for the span — must
+// turn a 70s span's overlapping sub-windows into a strictly increasing,
+// non-overlapping sequence of chunk ranges covering the span exactly once.
+//
+// Chunk boundaries are drawn from one absolute 1s grid shared by every
+// window (rather than a per-window cursor), so two overlapping windows that
+// both cover the same underlying second of audio report IDENTICAL chunk
+// boundaries for it — the only way to prove "exactly once" mathematically,
+// since `dropSeamDuplicates` decides keep/drop by midpoint and never trims a
+// kept item's own boundaries.
+{
+  const span: TagSpan = { startMs: 0, endMs: 70000, speaker: "candidate" };
+  const windows = subdivideSpan(span, MAX_WINDOW_MS, WINDOW_OVERLAP_MS);
+  assert.ok(windows.length > 1, "a 70s span must be subdivided into more than one sub-window for this composition to be meaningful");
+
+  const GRID_MS = 1000;
+  const gridChunks: { startMs: number; endMs: number }[] = [];
+  for (let t = span.startMs; t < span.endMs; t += GRID_MS) {
+    gridChunks.push({ startMs: t, endMs: Math.min(t + GRID_MS, span.endMs) });
+  }
+  const chunksForWindow = (window: { startMs: number; endMs: number }) =>
+    gridChunks.filter((c) => c.startMs >= window.startMs && c.endMs <= window.endMs);
+
+  let writtenEndMs = 0;
+  const accepted: { startMs: number; endMs: number }[] = [];
+  for (const window of windows) {
+    const chunks = chunksForWindow(window);
+    const kept = dropSeamDuplicates(chunks, writtenEndMs);
+    accepted.push(...kept);
+    const coveredThroughMs = kept.reduce((max, c) => Math.max(max, c.endMs), window.endMs);
+    writtenEndMs = Math.max(writtenEndMs, coveredThroughMs);
+  }
+
+  assert.deepEqual(
+    accepted,
+    gridChunks,
+    "the composed dispatch/dedupe loop must reconstruct the span's full grid exactly once, with no gap and no duplicate"
+  );
+  for (let i = 1; i < accepted.length; i++) {
+    assert.equal(
+      accepted[i].startMs,
+      accepted[i - 1].endMs,
+      `accepted coverage must be strictly contiguous — gap or overlap between ${JSON.stringify(accepted[i - 1])} and ${JSON.stringify(accepted[i])}`
+    );
+  }
+  assert.equal(accepted[0].startMs, span.startMs, "coverage must start exactly at the span's own start");
+  assert.equal(accepted[accepted.length - 1].endMs, span.endMs, "coverage must end exactly at the span's own end");
 }
 
 // Regression: `dispatchWindowsUpTo` (transcriptionSession.ts) must never

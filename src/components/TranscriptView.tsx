@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import type { TranscriptTurn } from "../types";
+import type { Speaker, TranscriptTurn } from "../types";
 import type { TranscriptionStatus } from "../lib/transcriptionSession";
 import { formatElapsed } from "../lib/formatTime";
 import { SPEAKER_LABEL } from "./SpeakerBanner";
@@ -20,6 +20,10 @@ export interface TranscriptViewProps {
   isRecording: boolean;
   /** How many stored transcript records failed validation on read (T-05-03) — a shorter transcript must never pass for a complete one. */
   skippedCount: number;
+  /** D-51: true only once a take is stopped and has segments — the D-50 boundary-move gesture is unavailable while recording. */
+  canCorrect: boolean;
+  /** Reports the clicked segment's `seq`. The correction rule itself (`moveTurnBoundary`) lives in the section — this component only ever reports what was clicked. */
+  onMoveBoundary: (seq: number) => void;
 }
 
 /**
@@ -29,7 +33,14 @@ export interface TranscriptViewProps {
  * component plus a per-item subcomponent (`TranscriptTurnRow`) — and its card
  * language.
  */
-export const TranscriptView: React.FC<TranscriptViewProps> = ({ turns, status, isRecording, skippedCount }) => {
+export const TranscriptView: React.FC<TranscriptViewProps> = ({
+  turns,
+  status,
+  isRecording,
+  skippedCount,
+  canCorrect,
+  onMoveBoundary,
+}) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // D-56: auto-scroll to the newest line only while recording — an operator
@@ -56,6 +67,17 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ turns, status, i
         </div>
       )}
 
+      {/* D-50: the gesture's whole meaning, stated once here rather than
+          left to be inferred from a per-line control alone — canCorrect is
+          only ever true once the take is stopped (D-51), so this can never
+          appear next to a live, still-appending transcript. */}
+      {canCorrect && turns.length > 0 && (
+        <p className="text-[11px] text-[#6b7685] leading-relaxed">
+          Click a line to say the speaker changes there — the lines above it rejoin the other speaker's turn.
+          Click a turn's first line to undo the change entirely.
+        </p>
+      )}
+
       {turns.length === 0 ? (
         <p className="text-xs text-[#9aa3b0] leading-relaxed">
           {isRecording
@@ -64,9 +86,24 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ turns, status, i
         </p>
       ) : (
         <div ref={scrollRef} className="flex flex-col gap-2.5 max-h-80 overflow-y-auto">
-          {turns.map((turn, index) => (
-            <TranscriptTurnRow key={`${turn.startMs}-${index}`} turn={turn} />
-          ))}
+          {turns.map((turn, index) => {
+            // D-50: the speaker a boundary-move click on this turn would
+            // assign to the lines above it — the previous turn's speaker,
+            // or (no previous turn) the other of the two speakers. Exactly
+            // the rule `moveTurnBoundary` itself applies, computed here only
+            // to word the per-line control honestly.
+            const previousSpeaker: Speaker =
+              index > 0 ? turns[index - 1].speaker : turn.speaker === "candidate" ? "interviewer" : "candidate";
+            return (
+              <TranscriptTurnRow
+                key={`${turn.startMs}-${index}`}
+                turn={turn}
+                previousSpeaker={previousSpeaker}
+                canCorrect={canCorrect}
+                onMoveBoundary={onMoveBoundary}
+              />
+            );
+          })}
         </div>
       )}
     </div>
@@ -130,19 +167,63 @@ const StatusLine: React.FC<StatusLineProps> = ({ status }) => {
 
 interface TranscriptTurnRowProps {
   turn: TranscriptTurn;
+  /** The speaker a boundary-move click on this turn would assign to the lines above the click (D-50). */
+  previousSpeaker: Speaker;
+  /** D-51: only true once the take is stopped and has segments — gates whether this turn's lines render as buttons at all. */
+  canCorrect: boolean;
+  onMoveBoundary: (seq: number) => void;
 }
 
-/** One speaker turn: its start time, the speaker's name, and the joined text of every segment in the run. */
-const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({ turn }) => {
-  const text = turn.segments.map((segment) => segment.text.trim()).join(" ");
-
+/**
+ * One speaker turn: its start time, the speaker's name, a persistent marker
+ * when the turn's label was corrected (D-49 — the correction never hides
+ * once made, since the downloaded sidecar goes on describing the room as it
+ * was pressed), and the turn's text.
+ *
+ * While `canCorrect` is true (D-51), each segment renders as its own real
+ * `<button type="button">` — keyboard-reachable, and the same Space/Enter
+ * activation the Phase 4 spacebar handler already steps aside for on a
+ * focused button — so a click on any line reports that line's `seq` upward;
+ * the boundary-move rule itself lives in `LiveInterview.tsx`, never here.
+ * While recording (`canCorrect` false), the turn renders as plain,
+ * non-interactive text — an unusable control on every line during a live
+ * take is noise, not an affordance (D-51).
+ */
+const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({ turn, previousSpeaker, canCorrect, onMoveBoundary }) => {
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] font-mono text-[#6b7685] shrink-0">{formatElapsed(turn.startMs)}</span>
         <span className="text-xs font-semibold text-[#eef0f3]">{SPEAKER_LABEL[turn.speaker]}</span>
+        {turn.corrected && (
+          <span
+            className="text-[10px] font-semibold uppercase tracking-wide text-amber-400"
+            title="This turn's speaker label was corrected after the take — the recorded tag track and its downloaded sidecar are unchanged"
+          >
+            Corrected
+          </span>
+        )}
       </div>
-      <p className="text-sm text-[#c7ccd4] leading-relaxed pl-[3.25rem]">{text}</p>
+
+      {canCorrect ? (
+        <div className="flex flex-col gap-0.5 pl-[3.25rem]">
+          {turn.segments.map((segment) => (
+            <button
+              key={segment.seq}
+              type="button"
+              onClick={() => onMoveBoundary(segment.seq)}
+              title={`Speaker changes here — the lines above become ${SPEAKER_LABEL[previousSpeaker]}`}
+              className="text-left text-sm text-[#c7ccd4] leading-relaxed rounded-[4px] -mx-1 px-1 transition-colors hover:bg-[rgba(0,212,220,0.08)] hover:text-[#eef0f3] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00d4dc]"
+            >
+              {segment.text.trim()}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-[#c7ccd4] leading-relaxed pl-[3.25rem]">
+          {turn.segments.map((segment) => segment.text.trim()).join(" ")}
+        </p>
+      )}
     </div>
   );
 };
