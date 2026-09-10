@@ -32,7 +32,18 @@ import {
 } from "../src/lib/levelMeter";
 import type { PreflightSampleState } from "../src/lib/levelMeter";
 import { describeCaptureError, UNSUPPORTED_FORMAT_REASON } from "../src/lib/audioCapture";
-import type { TagPress, RecordingSession, AudioChunkMeta } from "../src/types";
+import { downsampleTo16k, peakFrameRms, sliceByTime, TARGET_SAMPLE_RATE } from "../src/lib/audioResample";
+import {
+  SPAN_FLOOR_MS,
+  MAX_WINDOW_MS,
+  WINDOW_OVERLAP_MS,
+  SILENCE_FRAME_MS,
+  mergeSubFloorSpans,
+  subdivideSpan,
+  planWindows,
+  dropSeamDuplicates,
+} from "../src/lib/windowCutting";
+import type { TagPress, RecordingSession, AudioChunkMeta, TagSpan } from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
 // Asserted algebraically: with clockOrigin === performance.now() at call time
@@ -633,6 +644,211 @@ const SAMPLE_MS = 50;
   }
   assert.equal(spans[spans.length - 1].endMs, boundary);
   assert.equal(spans[spans.length - 1].speaker, "candidate", "the out-of-range press must not have moved the current speaker");
+}
+
+// 05-02 (LIVE-12): downsampleTo16k — the D-39 tap's decimation formula.
+
+// A 48kHz constant-valued buffer downsamples to a third the length with the
+// same constant value.
+{
+  const input = new Float32Array(300).fill(0.42);
+  const result = downsampleTo16k(input, 48000);
+  assert.equal(result.length, 100, "a 48kHz buffer must downsample to a third the length at 16kHz");
+  for (const sample of result) {
+    assert.ok(Math.abs(sample - 0.42) < 1e-6, "a constant-valued buffer's downsampled samples must equal the constant");
+  }
+}
+
+// Already at 16000: the input is returned unchanged.
+{
+  const input = new Float32Array([0.1, 0.2, 0.3]);
+  const result = downsampleTo16k(input, TARGET_SAMPLE_RATE);
+  assert.equal(result, input, "downsampleTo16k must return the same input reference when already at 16000");
+}
+
+// Empty input at a different rate returns an empty Float32Array.
+{
+  const result = downsampleTo16k(new Float32Array(0), 48000);
+  assert.equal(result.length, 0, "downsampleTo16k must return empty for an empty input");
+}
+
+// peakFrameRms (LIVE-12/D-47's energy gate): silence returns 0.
+{
+  const samples = new Float32Array(1600).fill(0); // 100ms of silence at 16kHz
+  const result = peakFrameRms(samples, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
+  assert.equal(result, 0, "peakFrameRms of pure silence must be 0");
+}
+
+// peakFrameRms returns 0 for an empty input.
+{
+  assert.equal(peakFrameRms(new Float32Array(0), TARGET_SAMPLE_RATE, SILENCE_FRAME_MS), 0);
+}
+
+// peakFrameRms returns the loud frame's level, not the average, for a
+// buffer that is silent except one 100ms burst.
+{
+  const sampleRate = TARGET_SAMPLE_RATE;
+  const frameSamples = Math.round((SILENCE_FRAME_MS / 1000) * sampleRate);
+  const totalFrames = 10;
+  const samples = new Float32Array(frameSamples * totalFrames).fill(0);
+  // Burst in the middle frame at full amplitude.
+  const burstStart = frameSamples * 5;
+  samples.fill(1, burstStart, burstStart + frameSamples);
+  const result = peakFrameRms(samples, sampleRate, SILENCE_FRAME_MS);
+  assert.ok(
+    Math.abs(result - 1) < 1e-6,
+    `peakFrameRms must return the loud frame's own level (~1), not the average across all frames, got ${result}`
+  );
+}
+
+// sliceByTime returns exact boundaries.
+{
+  const sampleRate = TARGET_SAMPLE_RATE;
+  const pcm = new Float32Array(sampleRate * 2); // 2 seconds
+  for (let i = 0; i < pcm.length; i++) pcm[i] = i;
+  const slice = sliceByTime(pcm, 0, 500, 1000, sampleRate);
+  assert.equal(slice.length, sampleRate / 2, "a 500ms slice at 16kHz must contain 8000 samples");
+  assert.equal(slice[0], pcm[sampleRate / 2], "the slice must start at the exact sample index for 500ms");
+}
+
+// sliceByTime clamps a range that starts before the buffer's own start.
+{
+  const sampleRate = TARGET_SAMPLE_RATE;
+  const pcm = new Float32Array(sampleRate); // 1 second, starting at absolute 1000ms
+  const slice = sliceByTime(pcm, 1000, 500, 1500, sampleRate);
+  assert.equal(slice.length, sampleRate / 2, "a range starting before the buffer must clamp to the buffer's own start");
+}
+
+// sliceByTime returns empty for an out-of-range request.
+{
+  const sampleRate = TARGET_SAMPLE_RATE;
+  const pcm = new Float32Array(sampleRate);
+  const slice = sliceByTime(pcm, 0, 5000, 6000, sampleRate);
+  assert.equal(slice.length, 0, "a range entirely outside the buffer must return an empty Float32Array");
+}
+
+// mergeSubFloorSpans (D-47): a 500ms interviewer span between two long
+// candidate spans erases and leaves one continuous candidate span.
+{
+  const spans: TagSpan[] = [
+    { startMs: 0, endMs: 5000, speaker: "candidate" },
+    { startMs: 5000, endMs: 5500, speaker: "interviewer" },
+    { startMs: 5500, endMs: 12000, speaker: "candidate" },
+  ];
+  const result = mergeSubFloorSpans(spans, SPAN_FLOOR_MS);
+  assert.deepEqual(result, [{ startMs: 0, endMs: 12000, speaker: "candidate" }]);
+}
+
+// mergeSubFloorSpans folds two consecutive sub-floor spans into the same
+// neighbour — both absorbed into the preceding kept span, which extends
+// past both of them.
+{
+  const spans: TagSpan[] = [
+    { startMs: 0, endMs: 5000, speaker: "candidate" },
+    { startMs: 5000, endMs: 5400, speaker: "interviewer" },
+    { startMs: 5400, endMs: 5700, speaker: "candidate" },
+    { startMs: 5700, endMs: 12000, speaker: "interviewer" },
+  ];
+  const result = mergeSubFloorSpans(spans, SPAN_FLOOR_MS);
+  assert.deepEqual(result, [
+    { startMs: 0, endMs: 5700, speaker: "candidate" },
+    { startMs: 5700, endMs: 12000, speaker: "interviewer" },
+  ]);
+}
+
+// mergeSubFloorSpans folds a leading sub-floor span forward, keeping the
+// following speaker.
+{
+  const spans: TagSpan[] = [
+    { startMs: 0, endMs: 300, speaker: "interviewer" },
+    { startMs: 300, endMs: 12000, speaker: "candidate" },
+  ];
+  const result = mergeSubFloorSpans(spans, SPAN_FLOOR_MS);
+  assert.deepEqual(result, [{ startMs: 0, endMs: 12000, speaker: "candidate" }]);
+}
+
+// mergeSubFloorSpans, when every span is sub-floor, returns one span for
+// the whole range carrying the first span's speaker.
+{
+  const spans: TagSpan[] = [
+    { startMs: 0, endMs: 500, speaker: "interviewer" },
+    { startMs: 500, endMs: 900, speaker: "candidate" },
+  ];
+  const result = mergeSubFloorSpans(spans, SPAN_FLOOR_MS);
+  assert.deepEqual(result, [{ startMs: 0, endMs: 900, speaker: "interviewer" }]);
+}
+
+// mergeSubFloorSpans always returns a contiguous partition covering exactly
+// the input range, for an arbitrary mix of kept and sub-floor spans.
+{
+  const spans: TagSpan[] = [
+    { startMs: 0, endMs: 200, speaker: "interviewer" }, // leading sub-floor
+    { startMs: 200, endMs: 8000, speaker: "candidate" }, // kept
+    { startMs: 8000, endMs: 8300, speaker: "interviewer" }, // sub-floor
+    { startMs: 8300, endMs: 8600, speaker: "candidate" }, // sub-floor, consecutive
+    { startMs: 8600, endMs: 15000, speaker: "interviewer" }, // kept
+  ];
+  const result = mergeSubFloorSpans(spans, SPAN_FLOOR_MS);
+  assert.equal(result[0].startMs, 0);
+  assert.equal(result[result.length - 1].endMs, 15000);
+  for (let i = 1; i < result.length; i++) {
+    assert.equal(result[i].startMs, result[i - 1].endMs, "merged spans must be contiguous with no gap");
+  }
+}
+
+// subdivideSpan returns one window for a 20s span (under MAX_WINDOW_MS).
+{
+  const span: TagSpan = { startMs: 0, endMs: 20000, speaker: "candidate" };
+  const windows = subdivideSpan(span, MAX_WINDOW_MS, WINDOW_OVERLAP_MS);
+  assert.deepEqual(windows, [{ startMs: 0, endMs: 20000, speaker: "candidate" }]);
+}
+
+// subdivideSpan on a 70s span returns windows none longer than
+// MAX_WINDOW_MS, all carrying the parent span's speaker, and emits no
+// trailing window shorter than the overlap.
+{
+  const span: TagSpan = { startMs: 0, endMs: 70000, speaker: "interviewer" };
+  const windows = subdivideSpan(span, MAX_WINDOW_MS, WINDOW_OVERLAP_MS);
+  assert.ok(windows.length > 1, "a 70s span must be subdivided into more than one window");
+  for (const window of windows) {
+    assert.ok(window.endMs - window.startMs <= MAX_WINDOW_MS, `window ${JSON.stringify(window)} must not exceed MAX_WINDOW_MS`);
+    assert.equal(window.speaker, "interviewer", "every sub-window must carry the parent span's speaker");
+  }
+  const last = windows[windows.length - 1];
+  assert.ok(
+    last.endMs - last.startMs >= WINDOW_OVERLAP_MS,
+    "the trailing window must not be shorter than the overlap"
+  );
+  assert.equal(last.endMs, 70000, "the last window must be clamped to the span's own end");
+}
+
+// planWindows returns windows in ascending startMs order, each window's
+// speaker matching the merged span it came from.
+{
+  const spans: TagSpan[] = [
+    { startMs: 0, endMs: 5000, speaker: "interviewer" },
+    { startMs: 5000, endMs: 40000, speaker: "candidate" },
+  ];
+  const windows = planWindows(spans, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS);
+  for (let i = 1; i < windows.length; i++) {
+    assert.ok(windows[i].startMs >= windows[i - 1].startMs, "planWindows must return windows in ascending startMs order");
+  }
+  for (const window of windows) {
+    const parent = spans.find((s) => window.startMs >= s.startMs && window.startMs < s.endMs);
+    assert.ok(parent, `window ${JSON.stringify(window)} must fall inside one of the input spans`);
+    assert.equal(window.speaker, parent?.speaker, "a window's speaker must match the span it came from");
+  }
+}
+
+// dropSeamDuplicates drops an item wholly inside the overlap and keeps one
+// whose midpoint clears it.
+{
+  const items = [
+    { startMs: 0, endMs: 1000 }, // midpoint 500, wholly inside a previousEndMs of 2000
+    { startMs: 1500, endMs: 3000 }, // midpoint 2250, clears previousEndMs of 2000
+  ];
+  const result = dropSeamDuplicates(items, 2000);
+  assert.deepEqual(result, [{ startMs: 1500, endMs: 3000 }]);
 }
 
 console.log("check-tag-track: all assertions passed");
