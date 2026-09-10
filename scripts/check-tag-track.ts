@@ -43,7 +43,9 @@ import {
   planWindows,
   dropSeamDuplicates,
 } from "../src/lib/windowCutting";
-import type { TagPress, RecordingSession, AudioChunkMeta, TagSpan } from "../src/types";
+import { effectiveSpeaker, groupIntoTurns, moveTurnBoundary } from "../src/lib/transcriptTurns";
+import { formatTranscriptText } from "../src/lib/transcriptText";
+import type { TagPress, RecordingSession, AudioChunkMeta, TagSpan, TranscriptSegment } from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
 // Asserted algebraically: with clockOrigin === performance.now() at call time
@@ -849,6 +851,224 @@ const SAMPLE_MS = 50;
   ];
   const result = dropSeamDuplicates(items, 2000);
   assert.deepEqual(result, [{ startMs: 1500, endMs: 3000 }]);
+}
+
+// 05-02 (LIVE-12/LIVE-13): transcriptTurns.ts and transcriptText.ts.
+
+function makeSegment(overrides: Partial<TranscriptSegment> & { seq: number }): TranscriptSegment {
+  return {
+    sessionId: "s1",
+    startMs: overrides.seq * 1000,
+    endMs: overrides.seq * 1000 + 900,
+    speaker: "candidate",
+    text: `segment ${overrides.seq}`,
+    windowStartMs: 0,
+    ...overrides,
+  };
+}
+
+// effectiveSpeaker: resolvedSpeaker ?? speaker.
+{
+  const unresolved = makeSegment({ seq: 0, speaker: "candidate" });
+  assert.equal(effectiveSpeaker(unresolved), "candidate");
+  const resolved = makeSegment({ seq: 1, speaker: "candidate", resolvedSpeaker: "interviewer" });
+  assert.equal(effectiveSpeaker(resolved), "interviewer");
+}
+
+// groupIntoTurns: empty input returns an empty array.
+{
+  assert.deepEqual(groupIntoTurns([]), []);
+}
+
+// groupIntoTurns groups consecutive same-speaker segments into one turn.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, speaker: "candidate" }),
+    makeSegment({ seq: 1, speaker: "candidate" }),
+  ];
+  const turns = groupIntoTurns(segments);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].segments.length, 2);
+}
+
+// groupIntoTurns splits on a speaker change.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, speaker: "interviewer" }),
+    makeSegment({ seq: 1, speaker: "candidate" }),
+  ];
+  const turns = groupIntoTurns(segments);
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].speaker, "interviewer");
+  assert.equal(turns[1].speaker, "candidate");
+}
+
+// groupIntoTurns respects a resolvedSpeaker override when grouping — a
+// segment overridden to match its neighbour joins that neighbour's turn.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, speaker: "interviewer" }),
+    makeSegment({ seq: 1, speaker: "candidate", resolvedSpeaker: "interviewer" }),
+    makeSegment({ seq: 2, speaker: "candidate" }),
+  ];
+  const turns = groupIntoTurns(segments);
+  assert.equal(turns.length, 2, "an override that matches the neighbour must merge into that neighbour's turn");
+  assert.equal(turns[0].segments.length, 2);
+}
+
+// groupIntoTurns sets corrected only when a member carries an override.
+{
+  const uncorrected = groupIntoTurns([makeSegment({ seq: 0, speaker: "candidate" })]);
+  assert.equal(uncorrected[0].corrected, false);
+  const corrected = groupIntoTurns([makeSegment({ seq: 0, speaker: "candidate", resolvedSpeaker: "interviewer" })]);
+  assert.equal(corrected[0].corrected, true);
+}
+
+// moveTurnBoundary: empty input returns an empty array.
+{
+  assert.deepEqual(moveTurnBoundary([], 0), []);
+}
+
+// moveTurnBoundary flips a lone segment to the other speaker.
+{
+  const segments: TranscriptSegment[] = [makeSegment({ seq: 0, speaker: "candidate" })];
+  const result = moveTurnBoundary(segments, 0);
+  assert.equal(result[0].resolvedSpeaker, "interviewer");
+  assert.equal(result[0].speaker, "candidate", "the original speaker field must never be rewritten");
+}
+
+// moveTurnBoundary moves only the leading segments when the target is
+// mid-turn.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, speaker: "interviewer" }),
+    makeSegment({ seq: 1, speaker: "candidate" }),
+    makeSegment({ seq: 2, speaker: "candidate" }),
+    makeSegment({ seq: 3, speaker: "candidate" }),
+  ];
+  const result = moveTurnBoundary(segments, 3);
+  const bySeq = new Map(result.map((s) => [s.seq, s]));
+  assert.equal(bySeq.get(0)?.resolvedSpeaker, undefined, "the prior turn must be untouched");
+  assert.equal(bySeq.get(1)?.resolvedSpeaker, "interviewer", "leading candidate segments must move to the previous speaker");
+  assert.equal(bySeq.get(2)?.resolvedSpeaker, "interviewer");
+  assert.equal(bySeq.get(3)?.resolvedSpeaker, undefined, "the target segment and after must be untouched");
+}
+
+// moveTurnBoundary merges a whole turn when the target is the turn's first
+// segment.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, speaker: "interviewer" }),
+    makeSegment({ seq: 1, speaker: "candidate" }),
+    makeSegment({ seq: 2, speaker: "candidate" }),
+  ];
+  const result = moveTurnBoundary(segments, 1);
+  const bySeq = new Map(result.map((s) => [s.seq, s]));
+  assert.equal(bySeq.get(1)?.resolvedSpeaker, "interviewer", "the whole run must merge into the previous turn");
+  assert.equal(bySeq.get(2)?.resolvedSpeaker, "interviewer");
+  assert.equal(bySeq.get(0)?.resolvedSpeaker, undefined);
+}
+
+// moveTurnBoundary is a no-op for an unknown targetSeq.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, speaker: "interviewer" }),
+    makeSegment({ seq: 1, speaker: "candidate" }),
+  ];
+  const result = moveTurnBoundary(segments, 999);
+  assert.deepEqual(result, segments, "an unknown targetSeq must be a no-op");
+}
+
+// moveTurnBoundary leaves every speaker field untouched and does not mutate
+// the array (or its segment objects) it was given.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, speaker: "interviewer" }),
+    makeSegment({ seq: 1, speaker: "candidate" }),
+    makeSegment({ seq: 2, speaker: "candidate" }),
+  ];
+  const originalCopy = segments.map((s) => ({ ...s }));
+  moveTurnBoundary(segments, 1);
+  assert.deepEqual(segments, originalCopy, "moveTurnBoundary must not mutate its input array or its segments");
+  for (const segment of segments) {
+    assert.equal(segment.resolvedSpeaker, undefined, "the input segments' own resolvedSpeaker must be untouched");
+  }
+}
+
+// formatTranscriptText on zero segments returns a non-empty string
+// containing the no-segments line.
+{
+  const take: RecordingSession = {
+    sessionId: "s1",
+    startedAt: Date.now(),
+    clockOrigin: 0,
+    declaredSpeaker: "interviewer",
+    mimeType: "audio/webm",
+    status: "stopped",
+    durationMs: 0,
+  };
+  const result = formatTranscriptText(take, []);
+  assert.ok(result.length > 0, "formatTranscriptText must never return an empty string");
+  assert.ok(
+    result.includes("No transcript segments were produced for this take."),
+    "the zero-segment case must state that no segments were produced"
+  );
+}
+
+// formatTranscriptText marks a corrected turn's label.
+{
+  const take: RecordingSession = {
+    sessionId: "s1",
+    startedAt: Date.now(),
+    clockOrigin: 0,
+    declaredSpeaker: "interviewer",
+    mimeType: "audio/webm",
+    status: "stopped",
+    durationMs: 5000,
+  };
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, speaker: "candidate", resolvedSpeaker: "interviewer", text: "hello there" }),
+  ];
+  const result = formatTranscriptText(take, segments);
+  assert.ok(result.includes("(corrected)"), "a corrected turn's label must carry a correction marker");
+}
+
+// formatTranscriptText preserves a non-ASCII string byte-identically.
+{
+  const take: RecordingSession = {
+    sessionId: "s1",
+    startedAt: Date.now(),
+    clockOrigin: 0,
+    declaredSpeaker: "interviewer",
+    mimeType: "audio/webm",
+    status: "stopped",
+    durationMs: 5000,
+  };
+  const nonAsciiText = "café résumé — 日本語 — naïve";
+  const segments: TranscriptSegment[] = [makeSegment({ seq: 0, speaker: "candidate", text: nonAsciiText })];
+  const result = formatTranscriptText(take, segments);
+  assert.ok(result.includes(nonAsciiText), "non-ASCII transcript text must round-trip byte-identically into the export");
+}
+
+// formatTranscriptText ends with exactly one trailing newline, no carriage
+// returns, for both the zero-segment and populated cases.
+{
+  const take: RecordingSession = {
+    sessionId: "s1",
+    startedAt: Date.now(),
+    clockOrigin: 0,
+    declaredSpeaker: "interviewer",
+    mimeType: "audio/webm",
+    status: "stopped",
+    durationMs: 5000,
+  };
+  const empty = formatTranscriptText(take, []);
+  assert.ok(empty.endsWith("\n") && !empty.endsWith("\n\n"), "must end with exactly one trailing newline");
+  assert.ok(!empty.includes("\r"), "must contain no carriage returns");
+
+  const populated = formatTranscriptText(take, [makeSegment({ seq: 0, speaker: "candidate", text: "hi" })]);
+  assert.ok(populated.endsWith("\n") && !populated.endsWith("\n\n"), "must end with exactly one trailing newline");
+  assert.ok(!populated.includes("\r"), "must contain no carriage returns");
 }
 
 console.log("check-tag-track: all assertions passed");
