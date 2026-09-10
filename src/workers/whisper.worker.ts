@@ -18,7 +18,21 @@ env.localModelPath = "/models/";
 env.backends.onnx.wasm.wasmPaths = "/ort/";
 
 export const MODEL_ID = "onnx-community/whisper-base-ONNX";
-export const MODEL_DTYPE = "q4f16";
+/**
+ * 05-07 engine-fix: was `"q4f16"`. Real-browser testing against a known-good
+ * speech sample found q4f16 (on WebGPU) returned `" I"` — garbage — with
+ * BOTH the nightly onnxruntime-web that `@huggingface/transformers@4.2.0`
+ * pins as a direct dependency AND the stable `onnxruntime-web@1.24.3`
+ * (pinned in package.json's `overrides`, since the nested-install location
+ * `fetch-model.mjs` copies WASM artifacts from must match what this worker
+ * actually loads). `"q8"` + `device: "wasm"` on stable `1.24.3` is the one
+ * configuration this session verified produces correct output — see
+ * `pickAsrDevice()`'s comment below and 05-07-ENGINE-FIX-SUMMARY.md for the
+ * full evidence table. `fetch-model.mjs` downloads the matching
+ * `*_quantized.onnx` file pair; `npm run check` asserts the two stay in
+ * sync (a mismatch is a hard 404 at runtime with `allowRemoteModels: false`).
+ */
+export const MODEL_DTYPE = "q8";
 
 /**
  * Whisper's own hard ceiling. The window planner (`src/lib/windowCutting.ts`,
@@ -46,7 +60,10 @@ export type WhisperRequest =
 /** Messages this worker posts. */
 export type WhisperResponse =
   | { type: "progress"; file: string; loadedBytes: number; totalBytes: number }
-  | { type: "ready"; device: "webgpu" | "wasm" }
+  // 05-07 engine-fix: `device` is single-valued now that WebGPU is never
+  // selected (see `pickAsrDevice()` below) — a `"webgpu" | "wasm"` union
+  // here would be a lie the caller could branch on.
+  | { type: "ready"; device: "wasm" }
   | { type: "result"; id: string; windowStartMs: number; speaker: Speaker; chunks: WhisperResultChunk[] }
   | { type: "error"; id?: string; message: string };
 
@@ -65,21 +82,24 @@ const workerScope = self as unknown as {
 };
 
 /**
- * Feature-detects WebGPU rather than hardcoding it or relying on an
- * undocumented "auto" capability probe — support is uneven even where
- * `navigator.gpu` exists (`TOOL-4-LIVE-INTERVIEW.md` §3, 05-RESEARCH.md
- * Anti-Patterns). Falls back to `"wasm"` on any absence or failure,
- * including a rejected `requestAdapter()`.
+ * 05-07 engine-fix: ALWAYS returns `"wasm"`. This used to feature-detect
+ * `navigator.gpu` and select `"webgpu"` whenever an adapter existed — that
+ * is exactly the broken path. Real-browser testing against a known-good
+ * speech sample ("The quick brown fox jumps over the lazy dog. This is a
+ * test of the transcription engine.", 4.78s, 16kHz, RMS 0.097) measured
+ * WebGPU returning garbage output on BOTH the nightly onnxruntime-web that
+ * `@huggingface/transformers@4.2.0` pins directly (q4f16 → `" I"`, fp16 →
+ * `" I I I And"`) and the stable `onnxruntime-web@1.24.3` this project now
+ * pins via `overrides` (q4f16 → `" I"`, fp16 → `" I I I And"`, q8 → hard
+ * `OrtRun` failure: `webgpu/program.cc:249 TensorShape ...`). The only
+ * configuration that produced the correct verbatim transcript was stable
+ * 1.24.3 + `dtype: "q8"` + `device: "wasm"`. DO NOT "restore" WebGPU here as
+ * a performance optimisation without re-measuring against a real sample in
+ * a real browser first — see 05-07-ENGINE-FIX-SUMMARY.md for the full
+ * evidence table. `navigator.gpu` is intentionally never consulted.
  */
-async function pickAsrDevice(): Promise<"webgpu" | "wasm"> {
-  if (!("gpu" in navigator)) return "wasm";
-  try {
-    const gpu = (navigator as unknown as { gpu: { requestAdapter: () => Promise<unknown> } }).gpu;
-    const adapter = await gpu.requestAdapter();
-    return adapter ? "webgpu" : "wasm";
-  } catch {
-    return "wasm";
-  }
+async function pickAsrDevice(): Promise<"wasm"> {
+  return "wasm";
 }
 
 let transcriber: Awaited<ReturnType<typeof pipeline<"automatic-speech-recognition">>> | null = null;
@@ -153,7 +173,16 @@ async function transcribeWindow(request: {
   }
 
   try {
-    const output = await transcriber(request.pcm, { return_timestamps: true });
+    // 05-07 engine-fix: `language`/`task` passed explicitly. This did not
+    // fix the garbage-output bug (the runtime/dtype/device combination did)
+    // — but the model is multilingual and leaving language detection
+    // implicit was a latent bug now that output is real and gets shown to a
+    // user.
+    const output = await transcriber(request.pcm, {
+      return_timestamps: true,
+      language: "en",
+      task: "transcribe",
+    });
     const chunks: WhisperResultChunk[] = (output.chunks ?? []).map((chunk) => ({
       text: chunk.text,
       startMs: request.windowStartMs + chunk.timestamp[0] * 1000,

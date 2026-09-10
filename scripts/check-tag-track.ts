@@ -11,6 +11,8 @@
  * calling `performance.now()`.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   deriveSpans,
   sortTakesNewestFirst,
@@ -1154,6 +1156,66 @@ function makeSegment(overrides: Partial<TranscriptSegment> & { seq: number }): T
   const populated = formatTranscriptText(take, [makeSegment({ seq: 0, speaker: "candidate", text: "hi" })]);
   assert.ok(populated.endsWith("\n") && !populated.endsWith("\n\n"), "must end with exactly one trailing newline");
   assert.ok(!populated.includes("\r"), "must contain no carriage returns");
+}
+
+// 05-07 engine-fix regression guard: the dtype src/workers/whisper.worker.ts
+// requests and the ONNX filename suffix scripts/fetch-model.mjs downloads
+// must name the SAME quantization. A mismatch is a hard 404 at runtime with
+// `env.allowRemoteModels = false` — exactly the class of error
+// 05-01-PLAN.md's own key_links warned about, and exactly what broke this
+// engine the first time (q4f16 worker + a runtime that couldn't run it
+// correctly). Static text analysis, not an import of either module — the
+// worker file casts the ambient `self` global in a way that throws under
+// plain Node, and fetch-model.mjs's own module-scope code performs real file
+// I/O; neither is safe to import from a pure assertion script.
+{
+  // @huggingface/transformers' own dtype -> ONNX filename-suffix mapping
+  // (DEFAULT_DTYPE_SUFFIX_MAPPING in its utils/dtypes.js), duplicated here
+  // deliberately: this script's whole point is to catch a *drift* between
+  // the two files below, so it must not import either of them to check
+  // itself against.
+  const DTYPE_SUFFIX: Record<string, string> = {
+    fp32: "",
+    fp16: "_fp16",
+    q8: "_quantized",
+    int8: "_int8",
+    uint8: "_uint8",
+    q4: "_q4",
+    q4f16: "_q4f16",
+    bnb4: "_bnb4",
+  };
+
+  const workerPath = fileURLToPath(new URL("../src/workers/whisper.worker.ts", import.meta.url));
+  const fetchModelPath = fileURLToPath(new URL("./fetch-model.mjs", import.meta.url));
+  const workerSrc = readFileSync(workerPath, "utf8");
+  const fetchModelSrc = readFileSync(fetchModelPath, "utf8");
+
+  const dtypeMatch = workerSrc.match(/export const MODEL_DTYPE = "([a-z0-9]+)";/);
+  assert.ok(
+    dtypeMatch,
+    "src/workers/whisper.worker.ts must declare `export const MODEL_DTYPE = \"...\";` as a quoted string literal"
+  );
+  const dtype = dtypeMatch![1];
+  const expectedSuffix = DTYPE_SUFFIX[dtype];
+  assert.ok(
+    expectedSuffix !== undefined,
+    `whisper.worker.ts's MODEL_DTYPE ("${dtype}") is not a recognised @huggingface/transformers dtype — update DTYPE_SUFFIX in this guard if a new dtype was intentionally introduced`
+  );
+
+  const onnxPathMatches = [...fetchModelSrc.matchAll(/path:\s*"onnx\/(encoder_model|decoder_model_merged)([a-z0-9_]*)\.onnx"/g)];
+  assert.ok(
+    onnxPathMatches.length >= 2,
+    "scripts/fetch-model.mjs must declare both onnx/encoder_model*.onnx and onnx/decoder_model_merged*.onnx entries in ONNX_FILES"
+  );
+  for (const match of onnxPathMatches) {
+    const [, base, actualSuffix] = match;
+    assert.equal(
+      actualSuffix,
+      expectedSuffix,
+      `dtype/filename mismatch: whisper.worker.ts requests MODEL_DTYPE "${dtype}" (expects filename suffix "${expectedSuffix || "(none)"}"), ` +
+        `but scripts/fetch-model.mjs downloads "${base}${actualSuffix}.onnx". With env.allowRemoteModels = false this is a hard 404 at runtime, not a silent CDN fallback.`
+    );
+  }
 }
 
 console.log("check-tag-track: all assertions passed");

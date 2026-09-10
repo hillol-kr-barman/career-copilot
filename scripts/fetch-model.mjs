@@ -6,14 +6,17 @@
  * third-party origin at runtime (LIVE-10's "no upload" claim has to be
  * literally true, not true-except-for-the-model):
  *
- *   1. The `onnx-community/whisper-base-ONNX` q4f16 snapshot, pinned to a
- *      commit SHA rather than `main` — a moved branch pointer is exactly the
- *      supply-chain risk (T-05-02) a pinned commit forecloses.
- *   2. The onnxruntime-web WASM runtime, copied out of the installed
- *      `onnxruntime-web` package (a transitive dependency of
- *      `@huggingface/transformers`) rather than left to resolve from its
- *      default CDN, which would punch a hole through `connect-src: 'self'`
- *      on first run (T-05-07).
+ *   1. The `onnx-community/whisper-base-ONNX` q8 ("quantized") snapshot,
+ *      pinned to a commit SHA rather than `main` — a moved branch pointer is
+ *      exactly the supply-chain risk (T-05-02) a pinned commit forecloses.
+ *      (05-07 engine-fix: originally q4f16; superseded — see the comment on
+ *      `ONNX_FILES` below and 05-07-ENGINE-FIX-SUMMARY.md.)
+ *   2. The onnxruntime-web WASM runtime, pinned to the STABLE `1.24.3` via
+ *      package.json's `overrides` (05-07 engine-fix — the nightly build
+ *      `@huggingface/transformers@4.2.0` pins broke quantized Whisper
+ *      decoders), copied out of the installed `onnxruntime-web` package
+ *      rather than left to resolve from its default CDN, which would punch
+ *      a hole through `connect-src: 'self'` on first run (T-05-07).
  *
  * Idempotent: a file already on disk at its declared byte size is skipped,
  * never re-downloaded or re-copied. `npm run build` runs this via the
@@ -22,7 +25,7 @@
  */
 
 import { createRequire } from "node:module";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,10 +55,20 @@ const ROOT_FILES = [
   { path: "vocab.json", bytes: 1036584 },
 ];
 
+// 05-07 engine-fix: the q4f16 pair below was replaced with the int8
+// ("quantized") pair at the SAME pinned revision. q4f16 (WebGPU) and the
+// then-current nightly onnxruntime-web returned garbage output
+// (" I" / " I I I And") against a known-good speech sample in real-browser
+// testing; the only verified-correct configuration on this model+runtime
+// stack is q8 (filenames "*_quantized.onnx") + onnxruntime-web 1.24.3 (see
+// the `overrides` entry in package.json) + device "wasm". See
+// src/workers/whisper.worker.ts's MODEL_DTYPE comment and 05-07-ENGINE-FIX-
+// SUMMARY.md for the full evidence. `npm run check` asserts this filename
+// suffix and the worker's MODEL_DTYPE name the same quantization.
 /** @type {Array<{ path: string; bytes: number }>} */
 const ONNX_FILES = [
-  { path: "onnx/encoder_model_q4f16.onnx", bytes: 14127819 },
-  { path: "onnx/decoder_model_merged_q4f16.onnx", bytes: 68288623 },
+  { path: "onnx/encoder_model_quantized.onnx", bytes: 23123021 },
+  { path: "onnx/decoder_model_merged_quantized.onnx", bytes: 158950475 },
 ];
 
 function modelUrl(relativePath) {
@@ -96,6 +109,61 @@ async function fetchModelFile({ path: relativePath, bytes: expectedBytes }) {
 }
 
 /**
+ * Resolves the installed `onnxruntime-web` package's directory. 05-07
+ * engine-fix pinned `onnxruntime-web@1.24.3` via a top-level npm `overrides`
+ * entry in `package.json` (the nightly build `@huggingface/transformers@4.2.0`
+ * pins directly returned garbage transcription output in real-browser
+ * testing — see 05-07-ENGINE-FIX-SUMMARY.md). Critically, with that override
+ * npm installs the package NESTED at
+ * `node_modules/@huggingface/transformers/node_modules/onnxruntime-web`, NOT
+ * hoisted to the project root's `node_modules/onnxruntime-web` — so a plain
+ * `require.resolve("onnxruntime-web")` rooted at THIS script (project root)
+ * fails to find it. Resolve it the way Node actually would when
+ * `@huggingface/transformers` itself imports `onnxruntime-web` — i.e. rooted
+ * at the transformers package — falling back to a root-rooted resolution for
+ * any future state where npm does hoist it. Fails loudly, printing the
+ * resolved version, if neither location can be found.
+ */
+function resolveOnnxRuntimeWebDistDir() {
+  // "onnxruntime-web/package.json" is not resolvable in either location —
+  // the package's "exports" map does not expose that subpath. Resolving the
+  // bare specifier instead lands on a file inside its dist/ directory (which
+  // holds every build artifact — node, browser, wasm, mjs — side by side),
+  // so dirname() of that file is the dist/ directory we need.
+  const attempts = [];
+
+  // Attempt 1: resolve exactly as @huggingface/transformers itself would —
+  // rooted at that package's own location, so Node's module resolution walks
+  // ITS node_modules first and finds the nested, overridden 1.24.3 install.
+  try {
+    const transformersRequire = createRequire(
+      join(projectRoot, "node_modules", "@huggingface", "transformers", "package.json")
+    );
+    const entryPath = transformersRequire.resolve("onnxruntime-web");
+    return dirname(entryPath);
+  } catch (err) {
+    attempts.push(`nested (via @huggingface/transformers): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Attempt 2: root-rooted resolution, in case a future npm/lockfile state
+  // hoists the package to the project root instead of nesting it.
+  try {
+    const rootRequire = createRequire(import.meta.url);
+    const entryPath = rootRequire.resolve("onnxruntime-web");
+    return dirname(entryPath);
+  } catch (err) {
+    attempts.push(`hoisted (project root): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  throw new Error(
+    `[fetch-model] FAILED to resolve the onnxruntime-web package in either its nested location ` +
+      `(node_modules/@huggingface/transformers/node_modules/onnxruntime-web) or the hoisted project root ` +
+      `(node_modules/onnxruntime-web). Is @huggingface/transformers installed, and does package.json's ` +
+      `"overrides"."onnxruntime-web" entry still say "1.24.3"? Attempts:\n  - ${attempts.join("\n  - ")}`
+  );
+}
+
+/**
  * Copies every `*.wasm` and `*.mjs` file out of the installed
  * `onnxruntime-web` package's `dist/` directory into `public/ort/` (flat, no
  * subdirectories). The plan 05-03 worker points
@@ -104,21 +172,18 @@ async function fetchModelFile({ path: relativePath, bytes: expectedBytes }) {
  * zero-file copy is the failure mode that only shows up in production.
  */
 async function copyOnnxRuntimeWasm() {
-  const require = createRequire(import.meta.url);
-  let entryPath;
+  const ortDistDir = resolveOnnxRuntimeWebDistDir();
+
+  // Report the resolved version so a mismatch against the pinned 1.24.3 is
+  // visible immediately rather than discovered only via broken transcription
+  // in the browser.
   try {
-    // "onnxruntime-web/package.json" is not resolvable — the package's
-    // "exports" map does not expose that subpath. Resolving the bare
-    // specifier instead lands on a file inside its dist/ directory (which
-    // holds every build artifact — node, browser, wasm, mjs — side by
-    // side), so dirname() of that file is the dist/ directory we need.
-    entryPath = require.resolve("onnxruntime-web");
-  } catch (err) {
-    throw new Error(
-      `[fetch-model] FAILED to resolve the onnxruntime-web package — is @huggingface/transformers installed? (${err instanceof Error ? err.message : String(err)})`
-    );
+    const ortPackageJsonPath = join(dirname(ortDistDir), "package.json");
+    const ortPackageJson = JSON.parse(await readFile(ortPackageJsonPath, "utf8"));
+    console.log(`[fetch-model] onnxruntime-web resolved: version ${ortPackageJson.version} at ${ortDistDir}`);
+  } catch {
+    console.log(`[fetch-model] onnxruntime-web resolved at ${ortDistDir} (version lookup failed, non-fatal)`);
   }
-  const ortDistDir = dirname(entryPath);
 
   let entries;
   try {

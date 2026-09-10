@@ -35,7 +35,10 @@ export interface TranscriptionStatus {
   lagMs: number;
   /** Total ms of audio that could not be buffered while the model was loading (D-44). */
   backlogDroppedMs: number;
-  device?: "webgpu" | "wasm";
+  // 05-07 engine-fix: single-valued now that the worker's pickAsrDevice()
+  // never selects WebGPU (see src/workers/whisper.worker.ts) — a
+  // "webgpu" | "wasm" union here would be a lie a caller could branch on.
+  device?: "wasm";
   message?: string;
 }
 
@@ -118,7 +121,7 @@ export async function startTranscriptionSession(
   let anyWindowErrored = false;
   let workerReady = false;
   let workerDead = false;
-  let modelDevice: "webgpu" | "wasm" | undefined;
+  let modelDevice: "wasm" | undefined;
   let phase: TranscriptionStatus["phase"] = "loading";
   let lastActivityAt = clock();
   let finished = false;
