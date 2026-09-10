@@ -552,7 +552,9 @@ const SAMPLE_MS = 50;
     "a non-string declaredSpeaker must be rejected"
   );
 
-  // A well-formed record normalises successfully with every field intact.
+  // A well-formed record normalises successfully with every field intact,
+  // including the v3 (05-02) fields defaulted for a record that carries
+  // none of them.
   const normalised = normaliseSessionRecord(validRaw);
   assert.ok(normalised, "a valid record must normalise, not return null");
   assert.deepEqual(normalised, {
@@ -564,6 +566,9 @@ const SAMPLE_MS = 50;
     status: "stopped",
     durationMs: 5000,
     sizeBytes: 100,
+    transcriptStatus: "none",
+    keepAudio: true,
+    audioDeleted: false,
   });
 
   // An out-of-vocabulary declaredSpeaker is present and a string, so it is
