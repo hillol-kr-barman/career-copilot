@@ -7,6 +7,13 @@ coverage/
 .env*
 !.env.example
 
+# Build-time-fetched vendor assets, not product code: the Whisper model
+# snapshot and the ONNX WASM runtime, mirrored into public/ by
+# `npm run fetch:model` (see scripts/fetch-model.mjs). Never committed —
+# every deploy fetches or restores them from a warm disk instead.
+public/models/
+public/ort/
+
 # Local-only working documents: planning notes, codebase maps, review write-ups
 # and assistant/editor state. These describe the work, not the product, and some
 # of it (the code review) catalogues weak points — it does not belong in the
