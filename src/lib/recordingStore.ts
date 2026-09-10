@@ -6,6 +6,7 @@ import type {
   Speaker,
   TagPress,
   TagSpan,
+  TranscriptStatus,
 } from "../types";
 
 /**
@@ -13,26 +14,33 @@ import type {
  * into a growing `Blob` — incremental blob-append rewrites the whole
  * accumulated blob on every write, which is quadratic over a long interview.
  *
- * Schema: database `live_interview_recordings` at version 2, with store
+ * Schema: database `live_interview_recordings` at version 3, with store
  * `sessions` (keyPath `sessionId`), store `chunks` (keyPath
- * `["sessionId", "seq"]`, index `bySession` on `sessionId`), and store `tags`
- * (`autoIncrement` key, index `bySession` on `sessionId`). Version 2 is a
- * one-way, non-migrating upgrade (D-28): `onupgradeneeded` drops and
- * recreates `sessions` and `chunks` rather than reading version-1 records
- * forward, because a version-1 session holds two interleaved chunk sequences
- * this reader cannot assemble into one file and the `chunks` keyPath itself
- * changes shape. Every read path here degrades to a safe empty default on
- * failure rather than throwing into the UI, mirroring `loadContext`'s
- * try/catch discipline in `src/App.tsx`.
+ * `["sessionId", "seq"]`, index `bySession` on `sessionId`), store `tags`
+ * (`autoIncrement` key, index `bySession` on `sessionId`), and store
+ * `transcript` (keyPath `["sessionId", "seq"]`, index `bySession` on
+ * `sessionId` — added at version 3, D-42). Version 2 is a one-way,
+ * non-migrating upgrade (D-28): `onupgradeneeded` drops and recreates
+ * `sessions` and `chunks` rather than reading version-1 records forward,
+ * because a version-1 session holds two interleaved chunk sequences this
+ * reader cannot assemble into one file and the `chunks` keyPath itself
+ * changes shape. Version 3 is a deliberate departure from that precedent
+ * (D-43): a v2 take is fully readable (audio plus tag track), so the v3
+ * branch only adds the new `transcript` store and touches `sessions`,
+ * `chunks` and `tags` not at all — see the `onupgradeneeded` handler below
+ * for the reasoning in full. Every read path here degrades to a safe empty
+ * default on failure rather than throwing into the UI, mirroring
+ * `loadContext`'s try/catch discipline in `src/App.tsx`.
  */
 
 export const DB_NAME = "live_interview_recordings";
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 const SESSIONS_STORE = "sessions";
 const CHUNKS_STORE = "chunks";
 const TAGS_STORE = "tags";
-const BY_SESSION_INDEX = "bySession";
+export const TRANSCRIPT_STORE = "transcript";
+export const BY_SESSION_INDEX = "bySession";
 
 /**
  * Every connection this app opens, except the one call site that opts out.
@@ -75,6 +83,21 @@ export function openRecordingDB(options?: { autoCloseOnVersionChange?: boolean }
         chunkStore.createIndex(BY_SESSION_INDEX, "sessionId");
         const tagStore = db.createObjectStore(TAGS_STORE, { autoIncrement: true });
         tagStore.createIndex(BY_SESSION_INDEX, "sessionId");
+      }
+      if (event.oldVersion < 3) {
+        // Additive only (D-43) — a deliberate departure from the v1->v2
+        // branch above. D-28's wipe happened because a v1 session held two
+        // interleaved chunk sequences the in-room reader physically could
+        // not assemble, so that data was unreadable, not merely old. A v2
+        // take is fully readable — audio plus tag track — so destroying it
+        // to avoid rendering one extra state would be exactly the
+        // behind-your-back deletion D-32 refused. This branch therefore
+        // touches `sessions`, `chunks` and `tags` not at all: it only
+        // creates the new `transcript` store. A v2 take simply has no
+        // transcript, which is a state the downloads panel renders
+        // honestly rather than a state this upgrade needs to prevent.
+        const transcriptStore = db.createObjectStore(TRANSCRIPT_STORE, { keyPath: ["sessionId", "seq"] });
+        transcriptStore.createIndex(BY_SESSION_INDEX, "sessionId");
       }
     };
     req.onsuccess = () => {
@@ -295,6 +318,32 @@ export async function updateSessionSize(db: IDBDatabase, sessionId: string, size
     getReq.onsuccess = () => {
       const existing = getReq.result as RecordingSession | undefined;
       if (existing) store.put({ ...existing, sizeBytes });
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Patches a session's transcript-lifecycle fields (D-52/D-53's
+ * `transcriptStatus`, `keepAudio`, `audioDeleted`) — the same
+ * read-modify-write shape `updateSessionSize` uses above.
+ * `durability: "strict"`, as `createSession`/`markSessionStopped` already
+ * use: a lost `audioDeleted` flag would make the downloads panel describe a
+ * file that is gone.
+ */
+export async function updateSessionTranscriptState(
+  db: IDBDatabase,
+  sessionId: string,
+  patch: Partial<Pick<RecordingSession, "transcriptStatus" | "keepAudio" | "audioDeleted">>
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SESSIONS_STORE, "readwrite", { durability: "strict" });
+    const store = tx.objectStore(SESSIONS_STORE);
+    const getReq = store.get(sessionId);
+    getReq.onsuccess = () => {
+      const existing = getReq.result as RecordingSession | undefined;
+      if (existing) store.put({ ...existing, ...patch });
     };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
@@ -568,6 +617,8 @@ export interface ResumableSessionInfo {
   lastSpeaker: Speaker | null;
 }
 
+const KNOWN_TRANSCRIPT_STATUSES: readonly TranscriptStatus[] = ["none", "running", "complete", "incomplete"];
+
 /**
  * Session records read back from storage are input, not trusted internal
  * state (T-04-04) — a record whose `sessionId`, `clockOrigin`, `mimeType` or
@@ -575,6 +626,15 @@ export interface ResumableSessionInfo {
  * A `declaredSpeaker` that is present but not one of the two known values is
  * normalised to `"candidate"` rather than treated as invalid, since the
  * field itself is present and trustworthy enough to keep the record.
+ *
+ * The three v3 fields (D-42/D-43) each default independently for a record
+ * written before they existed: `transcriptStatus` defaults to `"none"` when
+ * absent or not one of the four known values; `audioDeleted` defaults to
+ * `false`; and `keepAudio` defaults to **`true`** when absent. That last
+ * default is load-bearing — a pre-v3 take predates the opt-in entirely, and
+ * defaulting it to the new transcript-only behaviour would let a later
+ * retention pass delete audio the operator never agreed to give up (D-32,
+ * D-43). Only an explicit stored `false` overrides it.
  *
  * Exported so `scripts/check-tag-track.ts` can exercise its `sizeBytes`
  * defaulting rules directly — a validation rule that cannot be exercised is
@@ -594,6 +654,14 @@ export const normaliseSessionRecord = (value: unknown): RecordingSession | null 
   const durationMs = typeof record.durationMs === "number" ? record.durationMs : 0;
   const sizeBytes = typeof record.sizeBytes === "number" ? record.sizeBytes : 0;
 
+  const transcriptStatus: TranscriptStatus =
+    typeof record.transcriptStatus === "string" &&
+    (KNOWN_TRANSCRIPT_STATUSES as readonly string[]).includes(record.transcriptStatus)
+      ? (record.transcriptStatus as TranscriptStatus)
+      : "none";
+  const keepAudio = record.keepAudio === false ? false : true;
+  const audioDeleted = record.audioDeleted === true;
+
   return {
     sessionId: record.sessionId,
     startedAt,
@@ -603,6 +671,9 @@ export const normaliseSessionRecord = (value: unknown): RecordingSession | null 
     status,
     durationMs,
     sizeBytes,
+    transcriptStatus,
+    keepAudio,
+    audioDeleted,
   };
 };
 
@@ -763,13 +834,14 @@ export async function closeRecoveredSession(sessionId: string): Promise<number> 
 }
 
 /**
- * Deletes one session record and all of its chunks and tag presses, using
- * the `bySession` index on each store — otherwise deleting a take orphans
- * its tag track.
+ * Deletes one session record and all of its chunks, tag presses, and
+ * transcript segments, using the `bySession` index on each store —
+ * otherwise deleting a take orphans its tag track (or, since 05-02, its
+ * transcript).
  */
 const deleteSessionAndChunks = (db: IDBDatabase, sessionId: string): Promise<void> =>
   new Promise((resolve, reject) => {
-    const tx = db.transaction([SESSIONS_STORE, CHUNKS_STORE, TAGS_STORE], "readwrite");
+    const tx = db.transaction([SESSIONS_STORE, CHUNKS_STORE, TAGS_STORE, TRANSCRIPT_STORE], "readwrite");
     tx.objectStore(SESSIONS_STORE).delete(sessionId);
 
     const chunksIndex = tx.objectStore(CHUNKS_STORE).index(BY_SESSION_INDEX);
@@ -785,6 +857,15 @@ const deleteSessionAndChunks = (db: IDBDatabase, sessionId: string): Promise<voi
     const tagsCursorReq = tagsIndex.openCursor(IDBKeyRange.only(sessionId));
     tagsCursorReq.onsuccess = () => {
       const cursor = tagsCursorReq.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+
+    const transcriptIndex = tx.objectStore(TRANSCRIPT_STORE).index(BY_SESSION_INDEX);
+    const transcriptCursorReq = transcriptIndex.openCursor(IDBKeyRange.only(sessionId));
+    transcriptCursorReq.onsuccess = () => {
+      const cursor = transcriptCursorReq.result;
       if (!cursor) return;
       cursor.delete();
       cursor.continue();

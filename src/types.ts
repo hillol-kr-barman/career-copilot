@@ -106,6 +106,25 @@ export interface RecordingSession {
    * existed (see `normaliseSessionRecord`).
    */
   sizeBytes?: number;
+  /**
+   * This take's transcription lifecycle (D-53). Absent means the take
+   * predates v3 entirely; `normaliseSessionRecord` defaults it to `"none"`.
+   */
+  transcriptStatus?: TranscriptStatus;
+  /**
+   * The D-55 opt-in: whether this take's audio survives past the D-52
+   * retention pass once its transcript is complete and durable. Absent means
+   * a pre-v3 take that predates the opt-in entirely; `normaliseSessionRecord`
+   * defaults it to `true` so a retention pass can never delete audio the
+   * operator never agreed to give up (D-32, D-43).
+   */
+  keepAudio?: boolean;
+  /**
+   * Whether this take's audio has already been deleted by the D-52/D-53
+   * retention pass. Absent means audio has not been deleted;
+   * `normaliseSessionRecord` defaults it to `false`.
+   */
+  audioDeleted?: boolean;
 }
 
 /** Metadata for one recorded chunk, without its payload. */
@@ -152,4 +171,64 @@ export interface TagTrackSidecar {
   startedAt: number;
   declaredSpeaker: Speaker;
   spans: TagSpan[];
+}
+
+/**
+ * A take's transcription lifecycle (D-53). `"none"` is the absent-value
+ * default for a pre-v3 take, which predates transcription entirely. `readSegments`
+ * and the retention gate in plan 05-05 read this field to decide whether a
+ * take's audio may be deleted.
+ */
+export type TranscriptStatus = "none" | "running" | "complete" | "incomplete";
+
+/**
+ * One `transcript` IndexedDB record — Whisper's own ~sentence granularity
+ * (D-48), never a merged paragraph, because Phase 6's LIVE-16 needs a
+ * verbatim quote as evidence for every sub-ask.
+ *
+ * `startMs`/`endMs` are absolute within the take, measured on the same
+ * `clockOrigin` the tag track and every audio chunk already share
+ * (`audioElapsedMs` in `src/lib/recorder.ts`) — this phase introduces no
+ * second clock (D-48).
+ *
+ * `speaker` is what the tag track recorded for the window this segment came
+ * from, and it is never rewritten once written (D-49) — the tag-track
+ * partition stays immutable history. `resolvedSpeaker` is set only by a
+ * LIVE-13 correction; every downstream read resolves attribution as
+ * `resolvedSpeaker ?? speaker` rather than re-deriving it from spans.
+ *
+ * `windowStartMs` names the D-46 window this segment came out of, which is
+ * what makes seam de-duplication (`dropSeamDuplicates`) possible across a
+ * long span's sub-windows.
+ */
+export interface TranscriptSegment {
+  sessionId: string;
+  seq: number;
+  startMs: number;
+  endMs: number;
+  speaker: Speaker;
+  resolvedSpeaker?: Speaker;
+  text: string;
+  windowStartMs: number;
+}
+
+/** One unit of audio handed to the Whisper worker — a D-46 window, cut at tag-track span boundaries so it never carries two speakers. */
+export interface TranscriptWindow {
+  startMs: number;
+  endMs: number;
+  speaker: Speaker;
+}
+
+/**
+ * The display and export unit (D-48: segments are stored fine, displayed by
+ * turn). `corrected` is true when any member segment carries a
+ * `resolvedSpeaker` override, so the UI and the LIVE-14 export can mark a
+ * turn whose label was corrected.
+ */
+export interface TranscriptTurn {
+  speaker: Speaker;
+  startMs: number;
+  endMs: number;
+  segments: TranscriptSegment[];
+  corrected: boolean;
 }
