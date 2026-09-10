@@ -7,6 +7,11 @@ import { RecordingControls } from "../components/RecordingControls";
 import { CrashRecoveryPrompt } from "../components/CrashRecoveryPrompt";
 import { RecordingDownloads } from "../components/RecordingDownloads";
 import { MicSetup } from "../components/MicSetup";
+import { TranscriptView } from "../components/TranscriptView";
+import { startTranscriptionSession } from "../lib/transcriptionSession";
+import type { TranscriptionSessionHandle, TranscriptionStatus } from "../lib/transcriptionSession";
+import { readSegments } from "../lib/transcriptStore";
+import { groupIntoTurns } from "../lib/transcriptTurns";
 import {
   acquireMic,
   stopStream,
@@ -40,7 +45,7 @@ import {
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob, downloadJson } from "../lib/download";
-import type { CaptureStatus, RecordingSession, Speaker, TagTrackSidecar } from "../types";
+import type { CaptureStatus, RecordingSession, Speaker, TagTrackSidecar, TranscriptSegment } from "../types";
 import type { RecordingWarning } from "../components/RecordingControls";
 
 /** Copy from the UI-SPEC Copywriting Contract — a recovered session whose
@@ -160,6 +165,24 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   // computed once, it does not change over the component's lifetime.
   const [captureSupported] = useState(() => isRecordingFormatSupported());
 
+  // D-39/LIVE-11: this take's live transcript, built up one segment at a
+  // time as the worker returns results — never the whole thing at once.
+  // Reset to empty at the start of every take (handleBegin) and whenever the
+  // stopped-take pointer is cleared (handleAcceptConsent's "record another"
+  // path) so a new take never renders the previous one's lines.
+  const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
+  // D-57: the persistent lag/stall readout. Null before a session has ever
+  // started for the current take.
+  const [transcriptionStatus, setTranscriptionStatus] = useState<TranscriptionStatus | null>(null);
+  // T-05-03: how many stored transcript records failed validation on the
+  // post-Stop read — surfaced so a shorter transcript can never pass for a
+  // complete one.
+  const [transcriptSkippedCount, setTranscriptSkippedCount] = useState(0);
+  // A failed or absent transcriber, surfaced through the existing
+  // `warnings` array RecordingControls already renders — never through
+  // `setError`, which would wrongly imply the recording itself is at risk.
+  const [transcriptionWarning, setTranscriptionWarning] = useState<string | null>(null);
+
   // This chain gates on browser capability only, never on resume, job
   // description or API key — Tool 4 needs no key at all.
   const lockedReason = !captureSupported
@@ -174,6 +197,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   // (D-12) even after the visitor believes the recording is over.
   const dbRef = useRef<IDBDatabase | null>(null);
   const recorderHandleRef = useRef<RecorderHandle | null>(null);
+  // D-39: the live transcription session for the current take. Opens its
+  // own IndexedDB connection (never `dbRef`) — see
+  // `src/lib/transcriptionSession.ts`'s own doc comment for why.
+  const transcriptionRef = useRef<TranscriptionSessionHandle | null>(null);
   const liveStreamRef = useRef<MediaStream | null>(null);
   const cancelledRef = useRef(false);
   const connectButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -242,6 +269,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       cancelledRef.current = true;
       stopStream(liveStreamRef.current);
       recorderHandleRef.current?.stopAll().catch(() => {});
+      transcriptionRef.current?.abort();
       releaseWakeLock();
       dbRef.current?.close();
       dbRef.current = null;
@@ -303,6 +331,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     setRecoveryError("");
     setDeletingIds({});
     setDownloading({});
+    setTranscriptSegments([]);
+    setTranscriptionStatus(null);
+    setTranscriptSkippedCount(0);
     // The completion line (session/elapsedMs) describes a specific
     // stopped take, kept only for RecordingControls' stopped-state text
     // (see findTake's doc comment) — it must not go on describing a take
@@ -531,6 +562,15 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       setSession(null);
       setElapsedMs(0);
       setSpeaker("interviewer");
+      // The finished take's transcript is a fact about THAT take, not about
+      // the tool — carrying it forward would render the previous take's
+      // lines underneath the next one's banner the instant its first
+      // segment arrives (the append in handleBegin's onSegment callback
+      // pushes onto whatever this array already holds).
+      setTranscriptSegments([]);
+      setTranscriptionStatus(null);
+      setTranscriptSkippedCount(0);
+      setTranscriptionWarning(null);
     }
     setHasConsented(true);
   };
@@ -713,6 +753,47 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       // MediaRecorder running with no session behind it.
       recorderHandleRef.current = handle;
 
+      // A new take never renders a previous one's lines while its own first
+      // segment is still seconds away.
+      setTranscriptSegments([]);
+      setTranscriptionStatus(null);
+      setTranscriptSkippedCount(0);
+      setTranscriptionWarning(null);
+
+      // D-39: this try/catch is deliberately outside the reach of the outer
+      // catch below — that one deletes the freshly created session row on
+      // ANY thrown error from this whole block, and a transcriber that fails
+      // to start must not delete a recording (mirrors WR-01's reasoning for
+      // the resume path). A failure here is surfaced as a soft warning
+      // through `transcriptionWarning`, never through `setError`.
+      try {
+        const transcriptionSession = await startTranscriptionSession({
+          sessionId,
+          stream: micStream,
+          clock,
+          isResumedTake: Boolean(resumeSeed),
+          onSegment: (segment) => {
+            setTranscriptSegments((prev) => [...prev, segment]);
+          },
+          onStatus: (transcriptionStatusUpdate) => {
+            setTranscriptionStatus(transcriptionStatusUpdate);
+          },
+        });
+        transcriptionRef.current = transcriptionSession;
+        if (!transcriptionSession) {
+          setTranscriptionWarning(
+            "Live transcription could not start for this take. The recording itself is unaffected."
+          );
+        }
+      } catch (transcriptionErr) {
+        transcriptionRef.current = null;
+        setTranscriptionWarning(
+          transcriptionErr instanceof Error
+            ? `Live transcription could not start: ${transcriptionErr.message} The recording itself is unaffected.`
+            : "Live transcription could not start for this take. The recording itself is unaffected."
+        );
+      }
+
       resumeSeedRef.current = null;
       setIsResumingSession(false);
       setSession(newSession);
@@ -766,12 +847,15 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   const flipSpeaker = () => {
     if (status !== "recording" || !dbRef.current || !session) return;
     const next: Speaker = speaker === "interviewer" ? "candidate" : "interviewer";
+    // D-46: computed once and passed to both writers below — two calls to
+    // clock() would put the stored tag track and the live window planner on
+    // boundaries milliseconds apart.
+    const tsMs = clock();
     setSpeaker(next);
-    appendTagPress(dbRef.current, { sessionId: session.sessionId, tsMs: clock(), speaker: next }).catch(
-      (err) => {
-        setError(err instanceof Error ? err.message : "Failed to save a tag press.");
-      }
-    );
+    appendTagPress(dbRef.current, { sessionId: session.sessionId, tsMs, speaker: next }).catch((err) => {
+      setError(err instanceof Error ? err.message : "Failed to save a tag press.");
+    });
+    transcriptionRef.current?.notePress(tsMs, next);
   };
 
   const handlePause = () => {
@@ -855,6 +939,27 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       await updateSessionSize(db, session.sessionId, result.summary.totalBytes);
       const takes = await listStoppedSessions();
       setStoppedTakes(takes);
+
+      // D-39: deliberately not awaited — draining the transcriber's last
+      // windows must never hold the UI in a stopping state. Reads the
+      // durable segments back once draining resolves and refetches the take
+      // list a second time, so a later `transcriptStatus` write is reflected
+      // without waiting for the next unrelated refresh.
+      const stoppedSessionId = session.sessionId;
+      transcriptionRef.current
+        ?.finish(finalDuration)
+        .then(async () => {
+          transcriptionRef.current = null;
+          const { segments, skippedCount } = await readSegments(stoppedSessionId);
+          setTranscriptSegments(segments);
+          setTranscriptSkippedCount(skippedCount);
+          const refreshedTakes = await listStoppedSessions();
+          setStoppedTakes(refreshedTakes);
+        })
+        .catch(() => {
+          // Draining failures are already reported live through onStatus;
+          // nothing further to do here.
+        });
     } catch (err) {
       // Hardware and status are already released by this point (the
       // transition above runs before the awaited write, and teardownCapture
@@ -966,6 +1071,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   };
 
   const warnings: RecordingWarning[] = [];
+  if (transcriptionWarning) {
+    warnings.push({ id: "transcription", message: transcriptionWarning });
+  }
   if (wakeLockUnavailable) {
     warnings.push({
       id: "wake-lock",
@@ -1066,6 +1174,18 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
               onFlipSpeaker={flipSpeaker}
               connectButtonRef={connectButtonRef}
               warnings={warnings}
+            />
+
+            {/* D-56: the transcript builds beneath the banner
+                `RecordingControls` mounts above, in normal reading type,
+                never competing with the banner's across-the-table
+                legibility. Turn grouping only, never segment rendering —
+                that stays inside TranscriptView itself. */}
+            <TranscriptView
+              turns={groupIntoTurns(transcriptSegments)}
+              status={transcriptionStatus}
+              isRecording={status === "recording"}
+              skippedCount={transcriptSkippedCount}
             />
           </>
         )}
