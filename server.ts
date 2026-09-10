@@ -679,6 +679,34 @@ ${activePrompt}
 
   // Vite development integration
   if (process.env.NODE_ENV !== "production") {
+    // onnxruntime-web resolves its WASM backend by dynamically import()ing a
+    // proxy module under `env.backends.onnx.wasm.wasmPaths` ("/ort/"). Those
+    // artifacts live in `public/ort/`, and Vite's dev pipeline refuses to load
+    // a /public file that source code imports ("should not be imported from
+    // source code ... can only be referenced via HTML tags") — so in dev the
+    // import fails and the transcriber never initialises, while a production
+    // build works because `public/` is copied as-is and served statically.
+    //
+    // Serving /ort from express BEFORE Vite's middleware keeps those requests
+    // out of the module graph entirely, so dev and production resolve the same
+    // "/ort/" path against the same self-hosted files. This is deliberately
+    // mounted inside the dev branch only: in production the express.static
+    // below already serves them out of dist/.
+    //
+    // The explicit Content-Type matters: express's mime table does not map
+    // `.mjs`, and a module script served as application/octet-stream is
+    // rejected by the browser's strict MIME check for imports.
+    app.use(
+      "/ort",
+      express.static(path.join(publicDir, "ort"), {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith(".mjs")) {
+            res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+          }
+        },
+      })
+    );
+
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
