@@ -125,12 +125,32 @@ export function openRecordingDB(options?: { autoCloseOnVersionChange?: boolean }
  * after it, which reads as a recovered take that "never existed" rather than
  * one that lost its final few seconds. This write happens once per take, so
  * the added latency costs nothing worth trading away.
+ *
+ * Also writes the three transcription-era fields explicitly (D-52/D-53/D-55),
+ * under this same durability argument — they must exist on the row before
+ * the first chunk can arrive, exactly like every other field here:
+ * - `keepAudio` — the caller's D-55 opt-in answer, settled at the consent
+ *   step before this call, never defaulted here.
+ * - `audioDeleted: false` — nothing has been deleted yet.
+ * - `transcriptStatus: "running"` — transcription is always on (D-45), so a
+ *   take is transcribing from the instant it exists; a row that crashes
+ *   mid-take is therefore correctly found "running" and so incomplete,
+ *   which is the safe reading for the D-53 retention gate.
  */
 export async function createSession(
   db: IDBDatabase,
-  session: Omit<RecordingSession, "status" | "durationMs">
+  session: Omit<RecordingSession, "status" | "durationMs" | "audioDeleted" | "transcriptStatus"> & {
+    keepAudio: boolean;
+  }
 ): Promise<RecordingSession> {
-  const record: RecordingSession = { ...session, status: "recording", durationMs: 0, sizeBytes: 0 };
+  const record: RecordingSession = {
+    ...session,
+    status: "recording",
+    durationMs: 0,
+    sizeBytes: 0,
+    audioDeleted: false,
+    transcriptStatus: "running",
+  };
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(SESSIONS_STORE, "readwrite", { durability: "strict" });
     tx.objectStore(SESSIONS_STORE).put(record);

@@ -96,6 +96,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   // stop path and every failed-acquisition path back to idle). No storage
   // write, no ref, nothing that outlives the take it was given for.
   const [hasConsented, setHasConsented] = useState(false);
+  // D-55: the keep-audio opt-in, ticked (or not) at the same consent step as
+  // above and for the same reason — a fact about THIS take, reset at every
+  // take boundary alongside hasConsented, never persisted.
+  const [keepAudio, setKeepAudio] = useState(false);
   const [declaredSpeaker, setDeclaredSpeaker] = useState<Speaker>("candidate");
 
   // D-36: the operator's chosen input device. `undefined` means the system
@@ -560,7 +564,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
    * press. `declaredSpeaker` is deliberately left alone — it describes the
    * operator, who hasn't changed.
    */
-  const handleAcceptConsent = () => {
+  const handleAcceptConsent = (keepAudioChoice: boolean) => {
     if (status === "stopped") {
       setStatus("idle");
       setSession(null);
@@ -577,6 +581,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       setTranscriptionWarning(null);
     }
     setHasConsented(true);
+    // D-55: this take's keep-audio answer, settled before a byte exists.
+    setKeepAudio(keepAudioChoice);
   };
 
   const handleConnect = async () => {
@@ -726,6 +732,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
         clockOrigin: clockOriginRef.current,
         declaredSpeaker,
         mimeType,
+        keepAudio,
       });
 
       // Second unmount guard (WR-01): createSession is a second await gap,
@@ -903,6 +910,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     // again the moment the next Start is attempted, with nothing carried
     // forward.
     setHasConsented(false);
+    // D-55: same reasoning as hasConsented — a fact about the take that just
+    // ended, reset alongside it so the next take's opt-in starts unticked.
+    setKeepAudio(false);
   };
 
   const handleStop = async () => {
