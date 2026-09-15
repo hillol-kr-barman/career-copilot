@@ -728,7 +728,13 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       setModelStatus((prev) => ({ ...prev, phase: "loading", loadedBytes, totalBytes }));
     }).then((result) => {
       if (result.ok) {
-        setModelStatus({ phase: "ready", loadedBytes: 0, totalBytes: 0, device: result.device });
+        setModelStatus({
+          phase: "ready",
+          loadedBytes: 0,
+          totalBytes: 0,
+          device: result.device,
+          realtimeFactor: result.realtimeFactor,
+        });
       } else {
         setModelStatus({ phase: "failed", loadedBytes: 0, totalBytes: 0, message: result.message });
       }
@@ -1380,6 +1386,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
               skippedCount={transcriptSkippedCount}
               canCorrect={status === "stopped" && transcriptSegments.length > 0}
               onMoveBoundary={handleMoveBoundary}
+              realtimeFactor={modelStatus.realtimeFactor}
             />
           </>
         )}

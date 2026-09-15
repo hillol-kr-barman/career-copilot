@@ -9,6 +9,7 @@ import {
   PREFLIGHT_SUSTAIN_MS,
 } from "../lib/levelMeter";
 import type { LevelMeterHandle, PreflightSampleState } from "../lib/levelMeter";
+import { MAX_WINDOW_MS } from "../lib/windowCutting";
 import type { Speaker } from "../types";
 
 /** The `<select>` value standing in for "no explicit device id" (system default). */
@@ -44,7 +45,25 @@ export interface ModelStatus {
   loadedBytes: number;
   totalBytes: number;
   device?: string;
+  /** Task 2's one-off benchmark factor (`elapsedMs / audioMs`) — absent when the benchmark itself failed, present only once `phase` is `"ready"`. */
+  realtimeFactor?: number;
   message?: string;
+}
+
+/**
+ * Task 2: one honest sentence about how this machine is expected to keep up,
+ * derived from the benchmark factor and `MAX_WINDOW_MS` — information only,
+ * never a gate and never a suggestion to use a different model (LIVE-24
+ * stays in Phase 7). Returns null when there is no factor to report (the
+ * benchmark failed) — a missing measurement is a missing sentence.
+ */
+function describeRealtimeFactor(realtimeFactor: number | undefined): string | null {
+  if (realtimeFactor === undefined) return null;
+  if (realtimeFactor <= 1) {
+    return "This machine is expected to keep up with the room in real time.";
+  }
+  const lagSeconds = Math.round((MAX_WINDOW_MS / 1000) * realtimeFactor);
+  return `This machine is expected to run about ${lagSeconds}s behind while recording — the recording and the tag track are unaffected.`;
 }
 
 export interface MicSetupProps {
@@ -371,6 +390,10 @@ const ModelStatusRow: React.FC<ModelStatusRowProps> = ({ status, onRetry }) => {
             soon as the model is ready.
           </p>
         </>
+      )}
+
+      {status.phase === "ready" && describeRealtimeFactor(status.realtimeFactor) && (
+        <p className="text-xs text-[#6b7685] leading-relaxed">{describeRealtimeFactor(status.realtimeFactor)}</p>
       )}
 
       {status.phase === "failed" && (

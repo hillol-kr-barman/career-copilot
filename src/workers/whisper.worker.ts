@@ -57,7 +57,9 @@ export interface WhisperResultChunk {
 /** Messages this worker accepts. */
 export type WhisperRequest =
   | { type: "load" }
-  | { type: "transcribe"; id: string; pcm: Float32Array; windowStartMs: number; speaker: Speaker };
+  | { type: "transcribe"; id: string; pcm: Float32Array; windowStartMs: number; speaker: Speaker }
+  /** 05-06: one-off pre-flight speed measurement (D-57's other half) — see `runBenchmark`. */
+  | { type: "benchmark" };
 
 /** Messages this worker posts. */
 export type WhisperResponse =
@@ -77,6 +79,8 @@ export type WhisperResponse =
       /** T-05-12: how many chunks the pipeline returned that the per-chunk post-gate then dropped as silent — reported so a quiet stretch is surfaced, not swallowed. */
       silentChunks: number;
     }
+  /** 05-06: `runBenchmark`'s result — wall-clock elapsed time for one inference over `audioMs` of synthetic audio. The measurement is the latency, not the (discarded) transcribed text. */
+  | { type: "benchmarkResult"; elapsedMs: number; audioMs: number }
   | { type: "error"; id?: string; message: string };
 
 /**
@@ -258,11 +262,79 @@ async function transcribeWindow(request: {
   }
 }
 
+/** The synthetic benchmark buffer's duration — a few seconds, matched against `MAX_WINDOW_MS` on the reading side (`MicSetup.tsx`/`TranscriptView.tsx`), not against this constant. */
+const BENCHMARK_AUDIO_MS = 3000;
+const BENCHMARK_SAMPLE_COUNT = Math.round((BENCHMARK_AUDIO_MS / 1000) * TARGET_SAMPLE_RATE);
+
+/**
+ * Deterministic low-amplitude band-limited noise, synthesized fresh on every
+ * call — never a shipped audio asset, never a microphone read. A fixed-seed
+ * linear congruential generator (never `Math.random()`, which is not
+ * reproducible run to run and would make this measurement's own variance
+ * partly about the buffer rather than the machine) produces white noise; a
+ * short moving-average low-pass then band-limits it into something with
+ * speech-like energy without being intelligible speech.
+ */
+function synthesizeBenchmarkPcm(): Float32Array {
+  let seed = 42;
+  const nextRandom = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff - 0.5;
+  };
+
+  const raw = new Float32Array(BENCHMARK_SAMPLE_COUNT);
+  for (let i = 0; i < BENCHMARK_SAMPLE_COUNT; i++) raw[i] = nextRandom();
+
+  const windowSize = 8;
+  const amplitude = 0.05;
+  const smoothed = new Float32Array(BENCHMARK_SAMPLE_COUNT);
+  let windowSum = 0;
+  for (let i = 0; i < BENCHMARK_SAMPLE_COUNT; i++) {
+    windowSum += raw[i];
+    if (i >= windowSize) windowSum -= raw[i - windowSize];
+    smoothed[i] = (windowSum / Math.min(i + 1, windowSize)) * amplitude;
+  }
+  return smoothed;
+}
+
+/**
+ * D-57's pre-flight half: runs exactly one inference over a synthetic buffer
+ * and reports how long it took, discarding whatever text comes back — the
+ * measurement is the latency, not the output. Deliberately calls the
+ * `transcriber` directly rather than going through `transcribeWindow`: that
+ * function's energy gate would (correctly) refuse this buffer as near-silent,
+ * which is exactly why this is its own message type instead of a
+ * `transcribe` request with a bypass flag. A failure here posts a
+ * non-fatal-shaped `error` (no `id`, matching a load failure's shape) —
+ * `warmUpWhisper` on the caller side treats a benchmark failure as "no
+ * measurement", not as a failed warm-up.
+ */
+async function runBenchmark(): Promise<void> {
+  if (!transcriber) {
+    workerScope.postMessage({ type: "error", message: "The transcription model is not loaded yet." });
+    return;
+  }
+  try {
+    const pcm = synthesizeBenchmarkPcm();
+    const startedAt = Date.now();
+    await transcriber(pcm, { return_timestamps: true, language: "en", task: "transcribe" });
+    const elapsedMs = Date.now() - startedAt;
+    workerScope.postMessage({ type: "benchmarkResult", elapsedMs, audioMs: BENCHMARK_AUDIO_MS });
+  } catch (err) {
+    workerScope.postMessage({
+      type: "error",
+      message: err instanceof Error ? err.message : "The speed measurement failed.",
+    });
+  }
+}
+
 workerScope.onmessage = (event) => {
   const request = event.data;
   if (request.type === "load") {
     void loadModel();
   } else if (request.type === "transcribe") {
     void transcribeWindow(request);
+  } else if (request.type === "benchmark") {
+    void runBenchmark();
   }
 };

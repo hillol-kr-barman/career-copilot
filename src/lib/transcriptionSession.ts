@@ -76,6 +76,15 @@ export interface WarmupResult {
   // 05-07 engine-fix: single-valued for the same reason `TranscriptionStatus.device`
   // is — `pickAsrDevice()` never selects WebGPU.
   device?: "wasm";
+  /**
+   * `elapsedMs / audioMs` from the worker's one-off benchmark (Task 2, D-57's
+   * pre-flight half). At or below 1, this machine transcribes faster than
+   * the interview happens; above 1, the transcript falls behind by roughly
+   * that multiple. Absent — not 0, not 1 — when the benchmark itself failed;
+   * a missing measurement is a missing sentence on the reading side, never a
+   * failed warm-up.
+   */
+  realtimeFactor?: number;
   message?: string;
 }
 
@@ -94,11 +103,20 @@ export interface WarmupResult {
  * now live in the browser's HTTP cache, which is what makes the take's own
  * worker load fast; keeping this worker alive for the rest of the interview
  * would only hold memory for no benefit.
+ *
+ * Once `ready` arrives, immediately requests a `benchmark` (Task 2, D-57's
+ * pre-flight half) and folds its `realtimeFactor` into the resolved result.
+ * A benchmark failure — an `error` message, `onerror`, or `onmessageerror`
+ * arriving AFTER `ready` — still resolves `{ ok: true, device }`, just
+ * without a `realtimeFactor`: the model itself loaded fine, only the speed
+ * measurement didn't, and a missing measurement is a missing sentence on the
+ * reading side, not a broken pre-flight.
  */
 export function warmUpWhisper(onProgress: (loadedBytes: number, totalBytes: number) => void): Promise<WarmupResult> {
   return new Promise((resolve) => {
     const worker = createWorker();
     let settled = false;
+    let readyDevice: "wasm" | undefined;
 
     const finish = (result: WarmupResult) => {
       if (settled) return;
@@ -114,19 +132,40 @@ export function warmUpWhisper(onProgress: (loadedBytes: number, totalBytes: numb
         return;
       }
       if (message.type === "ready") {
-        finish({ ok: true, device: message.device });
+        readyDevice = message.device;
+        worker.postMessage({ type: "benchmark" } satisfies WhisperRequest);
+        return;
+      }
+      if (message.type === "benchmarkResult") {
+        finish({
+          ok: true,
+          device: readyDevice,
+          realtimeFactor: message.audioMs > 0 ? message.elapsedMs / message.audioMs : undefined,
+        });
         return;
       }
       if (message.type === "error") {
-        finish({ ok: false, message: message.message });
+        if (readyDevice) {
+          finish({ ok: true, device: readyDevice });
+        } else {
+          finish({ ok: false, message: message.message });
+        }
         return;
       }
     };
     worker.onerror = () => {
-      finish({ ok: false, message: "The transcription model failed to load." });
+      if (readyDevice) {
+        finish({ ok: true, device: readyDevice });
+      } else {
+        finish({ ok: false, message: "The transcription model failed to load." });
+      }
     };
     worker.onmessageerror = () => {
-      finish({ ok: false, message: "The transcription model sent an unreadable message while loading." });
+      if (readyDevice) {
+        finish({ ok: true, device: readyDevice });
+      } else {
+        finish({ ok: false, message: "The transcription model sent an unreadable message while loading." });
+      }
     };
 
     worker.postMessage({ type: "load" } satisfies WhisperRequest);
