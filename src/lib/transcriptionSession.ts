@@ -70,6 +70,69 @@ function createWorker(): Worker {
   return new Worker(new URL("../workers/whisper.worker.ts", import.meta.url), { type: "module" });
 }
 
+/** The D-44 pre-flight warm-up's outcome. Never a rejection — see `warmUpWhisper`. */
+export interface WarmupResult {
+  ok: boolean;
+  // 05-07 engine-fix: single-valued for the same reason `TranscriptionStatus.device`
+  // is — `pickAsrDevice()` never selects WebGPU.
+  device?: "wasm";
+  message?: string;
+}
+
+/**
+ * D-44's other half: warms the model during the D-37 pre-flight, before a
+ * take begins. Constructs a worker exactly the way `startTranscriptionSession`
+ * does, from the same `MODEL_ID`/`MODEL_DTYPE` module constants — so this
+ * load and the take's own worker load are requesting the identical files and
+ * the take's load hits the browser's HTTP cache instead of re-downloading. A
+ * divergence between the two would silently make this warm-up pointless.
+ *
+ * Never throws: a failure resolves `{ ok: false, message }` rather than
+ * rejecting, because a missing model is a fact the pre-flight panel reports,
+ * not an exception a caller must catch. Always terminates its own worker
+ * before resolving, on both the success and failure path — the model's bytes
+ * now live in the browser's HTTP cache, which is what makes the take's own
+ * worker load fast; keeping this worker alive for the rest of the interview
+ * would only hold memory for no benefit.
+ */
+export function warmUpWhisper(onProgress: (loadedBytes: number, totalBytes: number) => void): Promise<WarmupResult> {
+  return new Promise((resolve) => {
+    const worker = createWorker();
+    let settled = false;
+
+    const finish = (result: WarmupResult) => {
+      if (settled) return;
+      settled = true;
+      worker.terminate();
+      resolve(result);
+    };
+
+    worker.onmessage = (event: MessageEvent<WhisperResponse>) => {
+      const message = event.data;
+      if (message.type === "progress") {
+        onProgress(message.loadedBytes, message.totalBytes);
+        return;
+      }
+      if (message.type === "ready") {
+        finish({ ok: true, device: message.device });
+        return;
+      }
+      if (message.type === "error") {
+        finish({ ok: false, message: message.message });
+        return;
+      }
+    };
+    worker.onerror = () => {
+      finish({ ok: false, message: "The transcription model failed to load." });
+    };
+    worker.onmessageerror = () => {
+      finish({ ok: false, message: "The transcription model sent an unreadable message while loading." });
+    };
+
+    worker.postMessage({ type: "load" } satisfies WhisperRequest);
+  });
+}
+
 /**
  * Starts the live transcription pipeline for one take: opens its own
  * short-lived IndexedDB connection (never `LiveInterview`'s `dbRef` —

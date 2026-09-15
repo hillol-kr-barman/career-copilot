@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Mic, CheckCircle2, SkipForward, RotateCcw } from "lucide-react";
+import { Mic, CheckCircle2, SkipForward, RotateCcw, AlertTriangle, RefreshCw } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { DEVICE_FALLBACK_NOTICE } from "../lib/audioCapture";
 import type { AudioInputDevice } from "../lib/audioCapture";
@@ -30,6 +30,23 @@ const SIDE_PROMPT: Record<Speaker, string> = {
 
 const freshSampleState = (): PreflightSampleState => ({ peakLevel: 0, sustainedMs: 0, cleared: false });
 
+/**
+ * D-44's pre-flight model warm-up state, owned by `LiveInterview` for the
+ * same reason `preflightCleared` is — this panel unmounts between takes, and
+ * the parent is what needs to remember whether the model already loaded.
+ * `device` is a display string, not a branching value: `05-07-ENGINE-FIX-SUMMARY.md`
+ * fixed the worker to a single device (`"wasm"`), so this only ever reads
+ * "CPU" today, but the field stays general rather than baking in a value that
+ * would silently go stale if a future engine change widened it again.
+ */
+export interface ModelStatus {
+  phase: "idle" | "loading" | "ready" | "failed";
+  loadedBytes: number;
+  totalBytes: number;
+  device?: string;
+  message?: string;
+}
+
 export interface MicSetupProps {
   /** Every audio-input device the browser currently reports (D-36) — empty until permission is granted. */
   devices: AudioInputDevice[];
@@ -48,6 +65,10 @@ export interface MicSetupProps {
   onPreflightSideCleared: (side: Speaker) => void;
   /** Re-run control for the already-passed compact view: resets both flags and reopens the full step. */
   onPreflightReset: () => void;
+  /** D-44's model warm-up state — loaded/loading/failed, owned by the section component. */
+  modelStatus: ModelStatus;
+  /** Retries the warm-up after a failed load. */
+  onRetryModel: () => void;
 }
 
 /**
@@ -67,11 +88,19 @@ export const MicSetup: React.FC<MicSetupProps> = ({
   preflightCleared,
   onPreflightSideCleared,
   onPreflightReset,
+  modelStatus,
+  onRetryModel,
 }) => {
   const selectedDevice = devices.find((device) => device.deviceId === selectedDeviceId);
   // Only an actual override is worth surfacing on the collapsed header — the
   // system default is the unmarked case and needs no badge.
-  const badge = selectedDeviceId ? (selectedDevice?.label ?? null) : null;
+  const deviceBadge = selectedDeviceId ? (selectedDevice?.label ?? null) : null;
+  // The model badge does the same job the device-override badge already
+  // does — a collapsed panel must still show a still-loading model, since
+  // that is the one state on this panel with something actually happening
+  // in the background.
+  const modelBadge = modelStatus.phase === "loading" ? "Model loading" : null;
+  const badge = [deviceBadge, modelBadge].filter((value): value is string => Boolean(value)).join(" · ") || null;
 
   const bothCleared = preflightCleared.interviewer && preflightCleared.candidate;
 
@@ -270,8 +299,97 @@ export const MicSetup: React.FC<MicSetupProps> = ({
             </div>
           )}
         </div>
+
+        <div className="border-t border-[rgba(255,255,255,0.07)] pt-4 flex flex-col gap-3">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
+            Transcription model
+          </span>
+          <ModelStatusRow status={modelStatus} onRetry={onRetryModel} />
+        </div>
       </div>
     </CollapsibleSection>
+  );
+};
+
+interface ModelStatusRowProps {
+  status: ModelStatus;
+  onRetry: () => void;
+}
+
+/**
+ * D-44's model-ready row: the pre-flight now doubles as the model warm-up,
+ * so its state gets the same visibility as the both-voices check above it.
+ * loading/ready/failed each get distinct copy — see the plan's own
+ * requirement that Begin must never read as gated on this row, which is why
+ * none of these three states renders a disabling control, only information
+ * and (in the failed case) a retry.
+ */
+const ModelStatusRow: React.FC<ModelStatusRowProps> = ({ status, onRetry }) => {
+  const pct = status.totalBytes > 0 ? Math.round((status.loadedBytes / status.totalBytes) * 100) : 0;
+  // 05-07-ENGINE-FIX-SUMMARY.md: the worker only ever reports "wasm" — this
+  // stays a general mapping rather than a hardcoded "CPU" string so a future,
+  // re-measured device change doesn't need this file touched too.
+  const deviceLabel = status.device === "wasm" ? "CPU" : status.device === "webgpu" ? "GPU" : null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-1.5 text-xs font-semibold">
+        {status.phase === "loading" && (
+          <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin text-[#00d4dc]" />
+        )}
+        {status.phase === "ready" && <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" />}
+        {status.phase === "failed" && <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-red-400" />}
+        <span
+          className={
+            status.phase === "ready"
+              ? "text-emerald-500"
+              : status.phase === "failed"
+                ? "text-red-400"
+                : "text-[#9aa3b0]"
+          }
+        >
+          {status.phase === "loading" && `Downloading the transcription model — ${pct}%`}
+          {status.phase === "ready" &&
+            (deviceLabel
+              ? `Transcription model loaded, running on this machine's ${deviceLabel}`
+              : "Transcription model loaded")}
+          {status.phase === "failed" && "Transcription model failed to load"}
+          {status.phase === "idle" && "Preparing the transcription model…"}
+        </span>
+      </div>
+
+      {status.phase === "loading" && (
+        <>
+          <div className="relative w-full bg-[#161a1e] h-2 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[#00d4dc] transition-all duration-150 rounded-full"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="text-xs text-[#6b7685] leading-relaxed">
+            Recording can start before this finishes — spoken audio is held and transcribed as
+            soon as the model is ready.
+          </p>
+        </>
+      )}
+
+      {status.phase === "failed" && (
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-xs text-[#6b7685] leading-relaxed">
+            {status.message ?? "The transcription model could not be loaded."} The recording
+            itself will still work and the audio will still be saved.
+          </p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#9aa3b0] hover:text-[#eef0f3] shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            Retry
+          </button>
+        </div>
+      )}
+    </div>
   );
 };
 

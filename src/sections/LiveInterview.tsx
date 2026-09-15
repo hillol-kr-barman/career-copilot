@@ -7,8 +7,9 @@ import { RecordingControls } from "../components/RecordingControls";
 import { CrashRecoveryPrompt } from "../components/CrashRecoveryPrompt";
 import { RecordingDownloads } from "../components/RecordingDownloads";
 import { MicSetup } from "../components/MicSetup";
+import type { ModelStatus } from "../components/MicSetup";
 import { TranscriptView } from "../components/TranscriptView";
-import { startTranscriptionSession } from "../lib/transcriptionSession";
+import { startTranscriptionSession, warmUpWhisper } from "../lib/transcriptionSession";
 import type { TranscriptionSessionHandle, TranscriptionStatus } from "../lib/transcriptionSession";
 import { readSegments, applyResolvedSpeakers, countSegments } from "../lib/transcriptStore";
 import { groupIntoTurns, moveTurnBoundary } from "../lib/transcriptTurns";
@@ -124,6 +125,21 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     interviewer: false,
     candidate: false,
   });
+
+  // D-44: the pre-flight's model warm-up, owned here for the same reason
+  // preflightCleared is — MicSetup unmounts between takes and this must
+  // survive that. A loaded model is a fact about the machine, not about the
+  // take in progress, so nothing about this is reset in teardownCapture.
+  const [modelStatus, setModelStatus] = useState<ModelStatus>({
+    phase: "idle",
+    loadedBytes: 0,
+    totalBytes: 0,
+  });
+  // Guards the automatic once-per-machine kickoff below from re-firing on a
+  // second take's stream acquisition once the model has already started
+  // loading or finished — a manual retry (handleRetryModel) bypasses this
+  // ref deliberately, since a failed load should always be retriable.
+  const modelWarmupStartedRef = useRef(false);
 
   // D-25: the opening span belongs to the interviewer, so the current-speaker
   // surface (and the spacebar's first flip) starts there for every take.
@@ -435,6 +451,18 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     };
   }, [micStream]);
 
+  // D-44: kicks the model warm-up off once a stream exists — the same
+  // trigger point as the device-list effect above (permission is granted,
+  // the pre-flight panel is on screen) — guarded so a second take does not
+  // re-run it once the model is already loading or loaded. This never gates
+  // Begin: the buffered-PCM path in transcriptionSession.ts is what makes
+  // starting before this resolves safe (D-44).
+  useEffect(() => {
+    if (!micStream || modelWarmupStartedRef.current) return;
+    runModelWarmup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [micStream]);
+
   // Browsers auto-release the wake lock whenever the tab is hidden (D-14) —
   // re-request it whenever the tab regains visibility while a recording
   // (recording or paused) is still active. Installed only for the lifetime
@@ -685,6 +713,31 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   /** D-37: the compact-view "run pre-flight again" control — resets both flags and reopens the full step. */
   const handlePreflightReset = () => {
     setPreflightCleared({ interviewer: false, candidate: false });
+  };
+
+  /**
+   * D-44: runs (or re-runs) the pre-flight model warm-up. Marks
+   * modelWarmupStartedRef immediately so the effect above can never launch a
+   * second concurrent warm-up while this one is in flight. Never throws —
+   * `warmUpWhisper` itself always resolves — so this needs no try/catch.
+   */
+  const runModelWarmup = () => {
+    modelWarmupStartedRef.current = true;
+    setModelStatus({ phase: "loading", loadedBytes: 0, totalBytes: 0 });
+    warmUpWhisper((loadedBytes, totalBytes) => {
+      setModelStatus((prev) => ({ ...prev, phase: "loading", loadedBytes, totalBytes }));
+    }).then((result) => {
+      if (result.ok) {
+        setModelStatus({ phase: "ready", loadedBytes: 0, totalBytes: 0, device: result.device });
+      } else {
+        setModelStatus({ phase: "failed", loadedBytes: 0, totalBytes: 0, message: result.message });
+      }
+    });
+  };
+
+  /** The model row's retry control (failed state only) — re-runs the warm-up from scratch. */
+  const handleRetryModel = () => {
+    runModelWarmup();
   };
 
   const handleBegin = async () => {
@@ -1294,6 +1347,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
                 preflightCleared={preflightCleared}
                 onPreflightSideCleared={handlePreflightSideCleared}
                 onPreflightReset={handlePreflightReset}
+                modelStatus={modelStatus}
+                onRetryModel={handleRetryModel}
               />
             )}
             <RecordingControls
