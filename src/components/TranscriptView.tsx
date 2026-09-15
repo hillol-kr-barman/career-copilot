@@ -3,6 +3,7 @@ import { AlertTriangle, RefreshCw } from "lucide-react";
 import type { Speaker, TranscriptTurn } from "../types";
 import type { TranscriptionStatus } from "../lib/transcriptionSession";
 import { formatElapsed } from "../lib/formatTime";
+import { MAX_WINDOW_MS } from "../lib/windowCutting";
 import { SPEAKER_LABEL } from "./SpeakerBanner";
 
 /** Rounds a lag reading down to the nearest whole second for display. */
@@ -24,6 +25,8 @@ export interface TranscriptViewProps {
   canCorrect: boolean;
   /** Reports the clicked segment's `seq`. The correction rule itself (`moveTurnBoundary`) lives in the section — this component only ever reports what was clicked. */
   onMoveBoundary: (seq: number) => void;
+  /** Task 2's pre-flight benchmark factor, threaded through only to distinguish "running behind as expected" from "falling further behind" in the live lag readout below. */
+  realtimeFactor?: number;
 }
 
 /**
@@ -40,6 +43,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
   skippedCount,
   canCorrect,
   onMoveBoundary,
+  realtimeFactor,
 }) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -54,7 +58,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
 
   return (
     <div className="flex flex-col gap-3 rounded-[8px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] p-4">
-      <StatusLine status={status} />
+      <StatusLine status={status} realtimeFactor={realtimeFactor} />
 
       {skippedCount > 0 && (
         <div className="flex items-center gap-2 text-xs text-amber-400">
@@ -112,10 +116,31 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
 
 interface StatusLineProps {
   status: TranscriptionStatus | null;
+  realtimeFactor?: number;
+}
+
+/**
+ * Task 2: distinguishes "running behind as expected" from "falling further
+ * behind" for the live lag readout, using the pre-flight's own measured
+ * `realtimeFactor` as the yardstick. A window's own processing time is
+ * roughly `MAX_WINDOW_MS * realtimeFactor` on this machine — the same
+ * arithmetic `MicSetup`'s pre-flight sentence uses — so an actual live lag
+ * more than double that expected value means the transcript is falling
+ * further behind than the measurement predicted, not merely oscillating
+ * around it. Returns null when there is no measurement to compare against
+ * (benchmark failed or not yet run) or the machine is expected to keep up in
+ * real time, in which case the bare lag figure already says enough.
+ */
+function describeLiveLagExpectation(lagMs: number, realtimeFactor: number | undefined): string | null {
+  if (realtimeFactor === undefined || realtimeFactor <= 1) return null;
+  const expectedLagMs = MAX_WINDOW_MS * realtimeFactor;
+  return lagMs > expectedLagMs * 2
+    ? "This is falling further behind than this machine measured."
+    : "This is running behind as expected on this machine.";
 }
 
 /** The D-57 header line — worded per-phase so a stall can never read as "merely slow". */
-const StatusLine: React.FC<StatusLineProps> = ({ status }) => {
+const StatusLine: React.FC<StatusLineProps> = ({ status, realtimeFactor }) => {
   if (!status) return null;
 
   let text: string;
@@ -123,9 +148,12 @@ const StatusLine: React.FC<StatusLineProps> = ({ status }) => {
     case "loading":
       text = "Loading the transcription model — audio is being held and will be transcribed once it's ready.";
       break;
-    case "live":
+    case "live": {
       text = `Transcript is ~${formatLagSeconds(status.lagMs)} behind.`;
+      const expectation = describeLiveLagExpectation(status.lagMs, realtimeFactor);
+      if (expectation) text = `${text} ${expectation}`;
       break;
+    }
     case "stalled":
       text = `The transcriber has stopped responding — no line in the last ${formatStallSeconds(status.lagMs)}. The recording is unaffected.`;
       break;
