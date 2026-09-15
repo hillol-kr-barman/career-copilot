@@ -12,6 +12,7 @@ import { startTranscriptionSession } from "../lib/transcriptionSession";
 import type { TranscriptionSessionHandle, TranscriptionStatus } from "../lib/transcriptionSession";
 import { readSegments, applyResolvedSpeakers, countSegments } from "../lib/transcriptStore";
 import { groupIntoTurns, moveTurnBoundary } from "../lib/transcriptTurns";
+import { formatTranscriptText } from "../lib/transcriptText";
 import {
   acquireMic,
   stopStream,
@@ -46,7 +47,7 @@ import {
   deleteSessionAudio,
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
-import { downloadBlob, downloadJson } from "../lib/download";
+import { downloadBlob, downloadJson, downloadText } from "../lib/download";
 import type { CaptureStatus, RecordingSession, Speaker, TagTrackSidecar, TranscriptSegment } from "../types";
 import type { RecordingWarning } from "../components/RecordingControls";
 
@@ -162,6 +163,11 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   // separate from `session` (the take currently being recorded, if any):
   // one is live state, the other is a list of finished work.
   const [stoppedTakes, setStoppedTakes] = useState<RecordingSession[]>([]);
+  // Keyed by sessionId — one segment count per take, refetched alongside
+  // `stoppedTakes` every time that list is refetched (never on its own), so
+  // the downloads panel can tell "no transcript" apart from "a transcript
+  // exists" without re-reading every take's full segment list.
+  const [transcriptCounts, setTranscriptCounts] = useState<Record<string, number>>({});
   // Keyed by sessionId — guards a second concurrent delete press on the
   // same take (D-32: a delete must never remove more than the one take it
   // names, and must never fire twice for it).
@@ -255,6 +261,20 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
 
   const clock = () => audioElapsedMs(clockOriginRef.current, pausedMsRef.current, tsOffsetMsRef.current);
 
+  /**
+   * Reads a segment count for every given take and replaces
+   * `transcriptCounts` wholesale — called alongside every `stoppedTakes`
+   * refetch (never on its own) so the downloads panel can distinguish "no
+   * transcript" (`transcriptStatus: "none"`, count 0) from "a transcript
+   * exists" without re-reading every take's full segment list itself.
+   */
+  const refreshTranscriptCounts = async (takes: RecordingSession[]) => {
+    const entries = await Promise.all(
+      takes.map(async (take): Promise<[string, number]> => [take.sessionId, await countSegments(take.sessionId)])
+    );
+    setTranscriptCounts(Object.fromEntries(entries));
+  };
+
   // Read by the wake-lock re-acquire predicate, which needs the latest
   // status inside a closure that isn't re-created on every status change.
   const statusRef = useRef<CaptureStatus>(status);
@@ -318,6 +338,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       const takes = await listStoppedSessions();
       if (cancelled) return;
       setStoppedTakes(takes);
+      await refreshTranscriptCounts(takes);
+      if (cancelled) return;
       setRecoveryScanning(false);
     })();
     return () => {
@@ -337,6 +359,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     if (clearedAt === clearedAtRef.current) return;
     clearedAtRef.current = clearedAt;
     setStoppedTakes([]);
+    setTranscriptCounts({});
     setRecoveryInfo(null);
     setRecoveryError("");
     setDeletingIds({});
@@ -540,6 +563,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     }
     const takes = await listStoppedSessions();
     setStoppedTakes(takes);
+    await refreshTranscriptCounts(takes);
   };
 
   /**
@@ -955,6 +979,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       await updateSessionSize(db, session.sessionId, result.summary.totalBytes);
       const takes = await listStoppedSessions();
       setStoppedTakes(takes);
+      await refreshTranscriptCounts(takes);
 
       // D-39: deliberately not awaited — draining the transcriber's last
       // windows must never hold the UI in a stopping state. Reads the
@@ -971,6 +996,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
           setTranscriptSkippedCount(skippedCount);
           const refreshedTakes = await listStoppedSessions();
           setStoppedTakes(refreshedTakes);
+          await refreshTranscriptCounts(refreshedTakes);
 
           // D-52/D-53: the retention gate, run exactly once per take, here
           // and nowhere else. `finish()` above has already written this
@@ -1079,6 +1105,34 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   };
 
   /**
+   * LIVE-14: reads one take's transcript segments, formats them as plain
+   * text with `formatTranscriptText` (which resolves each turn's speaker as
+   * `resolvedSpeaker ?? speaker` and marks a corrected turn — see that
+   * function's own doc comment), and hands the result to `downloadText`.
+   * Keyed on its own `${sessionId}:transcript` in-flight flag, exactly like
+   * `handleDownloadAudio`/`handleDownloadSidecar`, so a transcript download
+   * never blocks — and is never blocked by — either of the other two
+   * downloads of the same take.
+   */
+  const handleDownloadTranscript = async (sessionId: string, filename: string) => {
+    const key = `${sessionId}:transcript`;
+    if (downloading[key]) return;
+    const take = findTake(sessionId);
+    if (!take) return;
+    setError("");
+    setDownloading((prev) => ({ ...prev, [key]: true }));
+    try {
+      const { segments } = await readSegments(sessionId);
+      const text = formatTranscriptText(take, segments);
+      downloadText(filename, text);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not build the transcript download.");
+    } finally {
+      setDownloading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  /**
    * Deletes one take and refetches the list (D-32). Guarded against a second
    * concurrent press for the same take id — a concurrent delete of a
    * different take is unaffected. If the deleted take is also the one the
@@ -1094,6 +1148,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       await deleteSession(sessionId);
       const takes = await listStoppedSessions();
       setStoppedTakes(takes);
+      await refreshTranscriptCounts(takes);
       if (session?.sessionId === sessionId) {
         setSession(null);
         setElapsedMs(0);
@@ -1279,11 +1334,13 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
             downloads (04-12's structural property, preserved here). */}
         <RecordingDownloads
           takes={stoppedTakes}
+          transcriptCounts={transcriptCounts}
           downloading={downloading}
           deletingIds={deletingIds}
           hasActiveTake={status === "connecting" || status === "armed" || status === "recording" || status === "paused"}
           onDownloadAudio={handleDownloadAudio}
           onDownloadSidecar={handleDownloadSidecar}
+          onDownloadTranscript={handleDownloadTranscript}
           onDeleteTake={handleDeleteTake}
         />
       </div>
