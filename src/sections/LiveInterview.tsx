@@ -10,7 +10,7 @@ import { MicSetup } from "../components/MicSetup";
 import { TranscriptView } from "../components/TranscriptView";
 import { startTranscriptionSession } from "../lib/transcriptionSession";
 import type { TranscriptionSessionHandle, TranscriptionStatus } from "../lib/transcriptionSession";
-import { readSegments, applyResolvedSpeakers } from "../lib/transcriptStore";
+import { readSegments, applyResolvedSpeakers, countSegments } from "../lib/transcriptStore";
 import { groupIntoTurns, moveTurnBoundary } from "../lib/transcriptTurns";
 import {
   acquireMic,
@@ -42,6 +42,8 @@ import {
   listStoppedSessions,
   updateSessionSize,
   closeRecoveredSession,
+  shouldDeleteAudio,
+  deleteSessionAudio,
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob, downloadJson } from "../lib/download";
@@ -969,6 +971,23 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
           setTranscriptSkippedCount(skippedCount);
           const refreshedTakes = await listStoppedSessions();
           setStoppedTakes(refreshedTakes);
+
+          // D-52/D-53: the retention gate, run exactly once per take, here
+          // and nowhere else. `finish()` above has already written this
+          // take's final `transcriptStatus`, and `refreshedTakes` is read
+          // fresh from storage so the gate sees that write rather than a
+          // stale in-memory copy. `shouldDeleteAudio` fails toward keeping
+          // on every ambiguity — see its own doc comment for the full truth
+          // table. Never called from a write path, and never anywhere else.
+          const freshTake = refreshedTakes.find((t) => t.sessionId === stoppedSessionId);
+          if (freshTake) {
+            const segmentCount = await countSegments(stoppedSessionId);
+            if (shouldDeleteAudio(freshTake, segmentCount)) {
+              await deleteSessionAudio(stoppedSessionId);
+              const takesAfterDelete = await listStoppedSessions();
+              setStoppedTakes(takesAfterDelete);
+            }
+          }
         })
         .catch(() => {
           // Draining failures are already reported live through onStatus;

@@ -19,6 +19,7 @@ import {
   normaliseSessionRecord,
   recoveredEndMs,
   summariseChunks,
+  shouldDeleteAudio,
 } from "../src/lib/recordingStore";
 import {
   audioElapsedMs,
@@ -1258,6 +1259,126 @@ function makeSegment(overrides: Partial<TranscriptSegment> & { seq: number }): T
   const populated = formatTranscriptText(take, [makeSegment({ seq: 0, speaker: "candidate", text: "hi" })]);
   assert.ok(populated.endsWith("\n") && !populated.endsWith("\n\n"), "must end with exactly one trailing newline");
   assert.ok(!populated.includes("\r"), "must contain no carriage returns");
+}
+
+// shouldDeleteAudio's full D-53 truth table (05-05 Task 3, checkpoint
+// decision "strict-five"). A take must satisfy ALL FIVE conditions before
+// its audio is deleted; every row below that satisfies fewer than five is
+// asserted `false` — these KEEP rows are the ones that actually protect a
+// real interview recording, and are asserted here deliberately, not just
+// the one row that deletes.
+{
+  // The base fixture for every row below: everything the deletion row
+  // requires, so each negative row below is a single-field mutation away
+  // from the one true row — isolating exactly which condition it is
+  // testing.
+  const retentionBase: RecordingSession = {
+    ...baseSession,
+    sessionId: "retention",
+    status: "stopped",
+    transcriptStatus: "complete",
+    keepAudio: false,
+    audioDeleted: false,
+  };
+
+  // The only true row: opted out, stopped, complete transcript, not already
+  // deleted, at least one segment.
+  assert.equal(
+    shouldDeleteAudio(retentionBase, 3),
+    true,
+    "opted-out + stopped + complete + not-deleted + segments>0 must delete"
+  );
+
+  // keepAudio: true (opted in) — the D-55 opt-in overrides everything else.
+  assert.equal(
+    shouldDeleteAudio({ ...retentionBase, keepAudio: true }, 3),
+    false,
+    "an opted-in take must keep its audio even with a complete transcript"
+  );
+
+  // keepAudio absent (pre-v3 record passed directly, bypassing
+  // normaliseSessionRecord's default) — strict equality against `false`
+  // means "not explicitly false" must keep, exactly like "explicitly true".
+  {
+    const { keepAudio: _drop, ...withoutKeepAudio } = retentionBase;
+    assert.equal(
+      shouldDeleteAudio(withoutKeepAudio as RecordingSession, 3),
+      false,
+      "an absent keepAudio field must keep — strict equality against false, not falsiness"
+    );
+  }
+
+  // status: "recording" — a take that is not yet stopped is never a
+  // deletion candidate, regardless of what transcriptStatus claims.
+  assert.equal(
+    shouldDeleteAudio({ ...retentionBase, status: "recording" }, 3),
+    false,
+    "a take still recording must keep its audio"
+  );
+
+  // transcriptStatus: "running" — the worker is still draining a backlog.
+  assert.equal(
+    shouldDeleteAudio({ ...retentionBase, transcriptStatus: "running" }, 3),
+    false,
+    "a still-running transcriptStatus must keep the audio"
+  );
+
+  // transcriptStatus: "incomplete" — an errored window, a dropped backlog,
+  // or a crash-recovered take (closeRecoveredSession's own write).
+  assert.equal(
+    shouldDeleteAudio({ ...retentionBase, transcriptStatus: "incomplete" }, 3),
+    false,
+    "an incomplete transcriptStatus must keep the audio"
+  );
+
+  // transcriptStatus: "none" — the pre-v3 default; a take that predates
+  // transcription entirely.
+  assert.equal(
+    shouldDeleteAudio({ ...retentionBase, transcriptStatus: "none" }, 3),
+    false,
+    "a transcriptStatus of \"none\" must keep the audio"
+  );
+
+  // segmentCount: 0 — a transcript marked complete but holding nothing is
+  // the one case a status flag alone cannot catch; the audio is the only
+  // surviving record of the take.
+  assert.equal(
+    shouldDeleteAudio(retentionBase, 0),
+    false,
+    "a complete transcript with zero segments must keep the audio"
+  );
+
+  // audioDeleted: true — a take whose audio is already gone is not deleted
+  // a second time.
+  assert.equal(
+    shouldDeleteAudio({ ...retentionBase, audioDeleted: true }, 3),
+    false,
+    "a take already marked audioDeleted must not be deleted again"
+  );
+
+  // The composition that actually protects an existing pre-v3 take:
+  // normaliseSessionRecord applied to a bare pre-v3 record (no
+  // transcriptStatus/keepAudio/audioDeleted fields at all — every field this
+  // phase introduced is absent) must default keepAudio to true, and passing
+  // that normalised record into shouldDeleteAudio must return false.
+  {
+    const barePreV3Raw = {
+      sessionId: "pre-v3",
+      startedAt: 1000,
+      clockOrigin: 0,
+      declaredSpeaker: "interviewer",
+      mimeType: "audio/webm",
+      status: "stopped",
+      durationMs: 5000,
+    };
+    const normalised = normaliseSessionRecord(barePreV3Raw);
+    assert.ok(normalised, "a bare pre-v3 record must still normalise");
+    assert.equal(
+      shouldDeleteAudio(normalised as RecordingSession, 3),
+      false,
+      "normaliseSessionRecord(bare pre-v3 record) -> shouldDeleteAudio must return false — this composition is what protects an existing take across the v3 upgrade"
+    );
+  }
 }
 
 // 05-07 engine-fix regression guard: the dtype src/workers/whisper.worker.ts
