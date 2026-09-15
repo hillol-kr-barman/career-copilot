@@ -323,6 +323,91 @@ export async function markSessionStopped(
 }
 
 /**
+ * D-53's whole retention decision, in one place. Pure — touches no browser
+ * API — so `scripts/check-tag-track.ts` can assert its entire truth table
+ * under Node. Deletion is the last step and every ambiguity resolves to
+ * keeping: this returns `true` only when every one of the five conditions
+ * below holds, and `false` for every other combination, including any
+ * combination this doc comment doesn't enumerate by name — there is no
+ * catch-all "and otherwise delete" branch anywhere in this function.
+ *
+ * - `take.keepAudio === false` — strict equality, not falsiness. An absent
+ *   field means a take recorded before the D-55 opt-in existed;
+ *   `normaliseSessionRecord` already defaults it to `true` for exactly this
+ *   reason, so a pre-v3 take always fails this check and keeps its audio
+ *   (D-32, D-43).
+ * - `take.status === "stopped"` — a take still recording (or a stale
+ *   crash-recovered row that was never closed) is never a deletion
+ *   candidate.
+ * - `take.transcriptStatus === "complete"` — a still-`"running"` worker, an
+ *   `"incomplete"` drain, and the pre-v3 `"none"` default all keep the
+ *   audio, because deleting it while any part of the transcript is missing,
+ *   in flight, or errored would destroy the only source for the missing
+ *   part.
+ * - `take.audioDeleted !== true` — a take already deleted is not deleted
+ *   twice.
+ * - `segmentCount > 0` — a transcript marked `"complete"` but holding no
+ *   segments means nothing was captured, or nothing was said; the audio is
+ *   then the only surviving record of the take, and deleting it destroys
+ *   that record for no reason worth the risk.
+ */
+export function shouldDeleteAudio(take: RecordingSession, segmentCount: number): boolean {
+  return (
+    take.keepAudio === false &&
+    take.status === "stopped" &&
+    take.transcriptStatus === "complete" &&
+    take.audioDeleted !== true &&
+    segmentCount > 0
+  );
+}
+
+/**
+ * Deletes only a session's `chunks` store records, through the `bySession`
+ * index cursor, counting what it removed, then marks the session row
+ * `audioDeleted: true` with `sizeBytes: 0` through the same
+ * `updateSessionTranscriptState`/`updateSessionSize` read-modify-write
+ * helpers every other session-row patch in this file already uses — so it
+ * touches no other field on the `sessions` row. Opens no transaction naming
+ * the `tags` or `transcript` stores anywhere in this function (D-54 — the
+ * tag-track sidecar, and the transcript itself, are always kept).
+ *
+ * Resolves — never rejects — returning the count of chunk records actually
+ * removed, or 0 on any failure. This is this module's existing
+ * degrade-to-safe-default discipline applied to a delete: a failed deletion
+ * leaves the audio still there, which is the safe direction (D-53).
+ *
+ * The only caller is `LiveInterview.tsx`'s post-`finish()` continuation,
+ * guarded by `shouldDeleteAudio` immediately before the call — never from a
+ * write path, and never anywhere else in this codebase.
+ */
+export async function deleteSessionAudio(sessionId: string): Promise<number> {
+  try {
+    const db = await openRecordingDB();
+    let deletedCount = 0;
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(CHUNKS_STORE, "readwrite", { durability: "strict" });
+      const index = tx.objectStore(CHUNKS_STORE).index(BY_SESSION_INDEX);
+      const cursorReq = index.openCursor(IDBKeyRange.only(sessionId));
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        if (!cursor) return;
+        cursor.delete();
+        deletedCount++;
+        cursor.continue();
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    await updateSessionTranscriptState(db, sessionId, { audioDeleted: true });
+    await updateSessionSize(db, sessionId, 0);
+    db.close();
+    return deletedCount;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Records a finished take's total byte size, once, after `markSessionStopped`
  * has already fired. Deliberately not folded into `markSessionStopped` — that
  * call fires before the blob assembly so a crash immediately after Stop still
@@ -591,9 +676,19 @@ export function deleteRecordingDB(): Promise<DeleteRecordingDBOutcome> {
 }
 
 /**
- * Whether the `chunks` store holds at least one record. Uses a count on the
- * store rather than reading records — the caller only needs a boolean and
- * the blobs are large.
+ * Whether the `chunks` store, the `transcript` store, or the `sessions`
+ * store holds at least one record. Uses a `count()` on each store rather
+ * than reading records — the caller only needs a boolean and the audio
+ * blobs are large.
+ *
+ * Before this phase this checked only the `chunks` store, which was
+ * sufficient while every take had audio. Once a take's audio can be deleted
+ * under D-52 while its transcript and session row remain, chunks alone would
+ * answer "nothing is stored" while a full transcript still sits on disk —
+ * and `App.tsx` gates the "Clear stored data" button on this function, so a
+ * transcript-only take would strand that data behind a disabled control.
+ * This checks all three stores so the question is honestly "is anything
+ * stored", not "is there still audio".
  *
  * Degrades to `false` on any failure (mirrors `loadContext`'s
  * try/catch-to-safe-default discipline in `src/App.tsx`) — a private
@@ -603,14 +698,19 @@ export function deleteRecordingDB(): Promise<DeleteRecordingDBOutcome> {
 export const hasStoredRecordings = async (): Promise<boolean> => {
   try {
     const db = await openRecordingDB();
-    const count = await new Promise<number>((resolve, reject) => {
-      const tx = db.transaction(CHUNKS_STORE, "readonly");
-      const req = tx.objectStore(CHUNKS_STORE).count();
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
+    const counts = await Promise.all(
+      [CHUNKS_STORE, TRANSCRIPT_STORE, SESSIONS_STORE].map(
+        (storeName) =>
+          new Promise<number>((resolve, reject) => {
+            const tx = db.transaction(storeName, "readonly");
+            const req = tx.objectStore(storeName).count();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          })
+      )
+    );
     db.close();
-    return count > 0;
+    return counts.some((count) => count > 0);
   } catch {
     return false;
   }
@@ -813,6 +913,14 @@ export const findResumableSession = async (): Promise<ResumableSessionInfo | nul
  * recovered take that is closed this way is indistinguishable in storage
  * from one that was stopped normally at that same instant.
  *
+ * Also writes `transcriptStatus: "incomplete"` — this take's remaining audio
+ * was never tapped (D-39 taps the live stream only; D-40 means there is no
+ * retroactive path once the stream is gone), so its transcript has a hole by
+ * construction. Writing `"incomplete"` here, unconditionally, is what makes
+ * `shouldDeleteAudio` keep this take's audio regardless of its `keepAudio`
+ * opt-in (D-53) — a crash-recovered take never had a chance to finish
+ * transcribing and must never be treated as though it did.
+ *
  * Resolves — never rejects — on any storage failure, returning 0: the
  * recovery prompt needs an honest "nothing was saved" it can act on, not a
  * promise that never settles and leaves the prompt stuck open.
@@ -846,6 +954,7 @@ export async function closeRecoveredSession(sessionId: string): Promise<number> 
 
     await markSessionStopped(db, sessionId, closingMs);
     await updateSessionSize(db, sessionId, totalBytes);
+    await updateSessionTranscriptState(db, sessionId, { transcriptStatus: "incomplete" });
     db.close();
     return closingMs;
   } catch {
