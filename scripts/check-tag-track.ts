@@ -1032,6 +1032,81 @@ const SAMPLE_MS = 50;
   }
 }
 
+// G-05-1: the final flush must CLAMP the trailing window to what is actually
+// buffered, never skip it.
+//
+// `finish()` clears the tick interval and closes the tap BEFORE its final
+// dispatch, and the boundary it passes is the recorder's clock — always a
+// little ahead of the buffered end, because the worklet only posts whole
+// 4096-frame blocks and discards its partial accumulator on close. A guard
+// that reads "not yet buffered, retry on a later tick" is therefore false on
+// the final flush: there is no later tick, and up to MAX_WINDOW_MS of the
+// take's last words was dropped instead of truncated.
+//
+// This models the buffer the coverage simulation above deliberately does not:
+// that harness assumes every planned window is dispatchable, which is exactly
+// the assumption this bug lived underneath.
+{
+  const TAKE_END_MS = 30000;
+  const TICK_MS = 1000; // mirrors transcriptionSession.ts's live tick cadence
+  // The buffer lags the recorder clock — one worklet block (4096 frames at
+  // 16 kHz = 256ms) plus capture latency, rounded to a realistic 300ms.
+  const BUFFER_LAG_MS = 300;
+  const bufferEndMs = TAKE_END_MS - BUFFER_LAG_MS;
+
+  const dispatchedKeys = new Set<string>();
+  const sent: { startMs: number; endMs: number }[] = [];
+
+  // Mirrors dispatchWindowsUpTo's guard, including the clamp under test.
+  function dispatch(boundaryMs: number, final: boolean) {
+    const spans = deriveSpans([], boundaryMs);
+    for (const w of eligibleWindows(spans, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS, final)) {
+      const key = `${w.startMs}:${w.endMs}`;
+      if (dispatchedKeys.has(key)) continue;
+      let endMs = w.endMs;
+      if (endMs > bufferEndMs) {
+        if (!final) continue;
+        endMs = bufferEndMs;
+        if (endMs <= w.startMs) continue;
+      }
+      dispatchedKeys.add(key);
+      sent.push({ startMs: w.startMs, endMs });
+    }
+  }
+
+  for (let now = TICK_MS; now <= TAKE_END_MS; now += TICK_MS) {
+    dispatch(Math.max(0, now - SPAN_FLOOR_MS), false);
+  }
+  dispatch(TAKE_END_MS, true);
+
+  assert.ok(sent.length > 0, "the final flush must dispatch at least one window");
+
+  const lastEndMs = Math.max(...sent.map((w) => w.endMs));
+  assert.equal(
+    lastEndMs,
+    bufferEndMs,
+    `the final flush must clamp its trailing window to the buffered end (${bufferEndMs}ms), not skip it — ` +
+      `dispatch reached only ${lastEndMs}ms, so the take's last ${bufferEndMs - lastEndMs}ms of speech was dropped (G-05-1)`
+  );
+
+  // No window may claim coverage past audio that exists — the clamp must
+  // truncate, never extend.
+  for (const w of sent) {
+    assert.ok(
+      w.endMs <= bufferEndMs,
+      `dispatched window ${JSON.stringify(w)} claims audio past the buffered end (${bufferEndMs}ms)`
+    );
+  }
+
+  // And the coverage between the start and the clamped end must still be gapless.
+  const sorted = [...sent].sort((a, b) => a.startMs - b.startMs);
+  let through = 0;
+  for (const w of sorted) {
+    assert.ok(w.startMs <= through, `gap in final-flush coverage before ${w.startMs}ms (covered through ${through}ms)`);
+    through = Math.max(through, w.endMs);
+  }
+}
+
 // dropSeamDuplicates drops an item wholly inside the overlap and keeps one
 // whose midpoint clears it.
 {

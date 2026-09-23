@@ -369,18 +369,43 @@ export async function startTranscriptionSession(
 
       const key = `${window.startMs}:${window.endMs}`;
       if (dispatchedWindowKeys.has(key)) continue;
-      if (window.endMs > bufferEndMs) continue; // not yet fully buffered — retried on a later tick
+
+      // A window can extend past what has actually been buffered. On a live
+      // tick that just means "not yet" and the next tick retries — but on the
+      // FINAL flush there is no next tick, so skipping would silently discard
+      // the take's last words (G-05-1).
+      //
+      // `finish()` clears the tick interval and calls `tap.close()` BEFORE
+      // dispatching with `final: true`, and `boundaryMs` there is the
+      // recorder's own clock, which always runs slightly ahead of
+      // `bufferEndMs`: the worklet only posts whole 4096-frame blocks and
+      // discards its partial accumulator on close, on top of
+      // capture-to-main-thread latency. So the trailing window essentially
+      // always failed this guard, and up to MAX_WINDOW_MS of speech was
+      // dropped rather than truncated.
+      //
+      // Clamp to what is buffered and transcribe that. Nothing further can
+      // arrive, so the clamped end IS the true end of this take's audio.
+      let endMs = window.endMs;
+      if (endMs > bufferEndMs) {
+        if (!options.final) continue; // live: not yet buffered, a later tick retries
+        endMs = bufferEndMs;
+        if (endMs <= window.startMs) continue; // nothing buffered for this window at all
+      }
 
       dispatchedWindowKeys.add(key);
-      dispatchedThroughMs = Math.max(dispatchedThroughMs, window.endMs);
+      dispatchedThroughMs = Math.max(dispatchedThroughMs, endMs);
 
       const buffer = materializeBuffer();
-      const pcm = sliceByTime(buffer, bufferStartMs, window.startMs, window.endMs, TARGET_SAMPLE_RATE);
+      const pcm = sliceByTime(buffer, bufferStartMs, window.startMs, endMs, TARGET_SAMPLE_RATE);
       if (pcm.length === 0) continue; // nothing usable — e.g. this range has already been dropped
 
       const id = crypto.randomUUID();
       pendingWindowIds.add(id);
-      pendingWindowMeta.set(id, { endMs: window.endMs, spanStartMs });
+      // The CLAMPED end, not `window.endMs` — this feeds `spanWrittenEndMs`,
+      // the seam-dedup high-water mark, which must never claim coverage past
+      // audio that was actually transcribed.
+      pendingWindowMeta.set(id, { endMs, spanStartMs });
       const request: WhisperRequest = {
         type: "transcribe",
         id,
