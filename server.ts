@@ -210,11 +210,16 @@ const STRUCTURE_SCHEMA = {
 } as const satisfies Record<string, unknown>;
 
 /**
- * Structured-output contract for the Assess call (LIVE-16 tracer subset —
- * plan 06-02 extends this with the D-73 ScoreRow fields, the STAR
- * applicability flag, and the session-level rollup fields). `exchangeIndex`
- * is required so the response can be correlated back to Structure's exact
- * exchanges by index rather than by trusting array order (Pitfall 1).
+ * Structured-output contract for the Assess call (LIVE-16/17/18/19, D-73).
+ * `exchangeIndex` is required so the response can be correlated back to
+ * Structure's exact exchanges by index rather than by trusting array order
+ * (Pitfall 1). The per-exchange `score` object asks the model for only the
+ * seven raw ScoreRow input fields — the two per-row averages further down
+ * this tool's scoring ledger already derives from those seven on every edit
+ * (`InterviewScoringTable.tsx`), and asking the model to author them here
+ * would let a Tool-4-sourced row silently disagree with a manually-edited
+ * one once Phase 7 wires the ledger. Neither of those two derived fields is
+ * requested anywhere in this schema.
  */
 const LIVE_FEEDBACK_SCHEMA = {
   type: "object",
@@ -231,24 +236,93 @@ const LIVE_FEEDBACK_SCHEMA = {
               type: "object",
               properties: {
                 text: { type: "string", description: "Must match the sub-ask's own text from Structure's output." },
-                coverage: { type: "string", description: "One of: ADDRESSED, PARTIAL, NOT_ADDRESSED, DEFLECTED." },
+                coverage: {
+                  type: "string",
+                  description:
+                    "One of exactly: ADDRESSED, PARTIAL, NOT_ADDRESSED, DEFLECTED. A verdict of ADDRESSED requires a verbatim quote from the candidate's own words as evidenceQuote.",
+                },
                 evidenceQuote: {
                   type: "string",
                   description: "Verbatim quote from the candidate's own words. Empty string when coverage is NOT_ADDRESSED or DEFLECTED.",
                 },
                 assessment: { type: "string", description: "One sentence on how well this sub-ask was covered." },
+                whatAGoodAnswerWouldHaveIncluded: {
+                  type: "string",
+                  description: "One or two sentences on what a strong answer to this specific sub-ask would have covered.",
+                },
               },
-              required: ["text", "coverage", "evidenceQuote", "assessment"],
+              required: ["text", "coverage", "evidenceQuote", "assessment", "whatAGoodAnswerWouldHaveIncluded"],
               additionalProperties: false,
             },
           },
+          starApplicable: {
+            type: "boolean",
+            description:
+              "False for a purely technical or motivational question where a STAR (Situation/Task/Action/Result) read would be a grade against a rubric that never applied to this question.",
+          },
+          starNote: {
+            type: "string",
+            description: "The per-exchange STAR completeness read. Empty string when starApplicable is false.",
+          },
+          score: {
+            type: "object",
+            description:
+              "The seven raw ScoreRow input fields on the existing 0-1 scale. The two per-row averages further down this tool's ledger are computed from these seven and are never requested here.",
+            properties: {
+              s: { type: "number", description: "Situation, 0 to 1." },
+              tE: { type: "number", description: "Task/Environment, 0 to 1." },
+              a: { type: "number", description: "Action, 0 to 1." },
+              rT: { type: "number", description: "Result/Technique, 0 to 1." },
+              cS: { type: "number", description: "Communication Style, 0 to 1." },
+              aE: { type: "number", description: "Adaptability/Expertise, 0 to 1." },
+              rA: { type: "number", description: "Analytical Reasoning, 0 to 1." },
+            },
+            required: ["s", "tE", "a", "rT", "cS", "aE", "rA"],
+            additionalProperties: false,
+          },
         },
-        required: ["exchangeIndex", "subAsks"],
+        required: ["exchangeIndex", "subAsks", "starApplicable", "starNote", "score"],
+        additionalProperties: false,
+      },
+    },
+    strengths: {
+      type: "string",
+      description: "A session-level summary of what the candidate did well across the whole interview.",
+    },
+    priorityImprovements: {
+      type: "string",
+      description: "A session-level summary of the highest-priority things to improve.",
+    },
+    resumeConsistency: {
+      type: "array",
+      description:
+        "Claims the candidate made that may not square with their resume, framed as something to reconcile rather than a discrepancy proven — the transcript is machine-generated and may have misheard the very detail in dispute.",
+      items: {
+        type: "object",
+        properties: {
+          spokenQuote: { type: "string", description: "Verbatim quote from the candidate's own words." },
+          resumeLine: { type: "string", description: "The specific resume line this spoken claim may not square with." },
+          note: { type: "string", description: "One sentence framing what should be reconciled." },
+        },
+        required: ["spokenQuote", "resumeLine", "note"],
+        additionalProperties: false,
+      },
+    },
+    jdCoverage: {
+      type: "array",
+      description: "Specific requirements drawn from the job description, and whether anything the candidate said evidenced them.",
+      items: {
+        type: "object",
+        properties: {
+          requirement: { type: "string", description: "A specific requirement drawn from the job description." },
+          evidenced: { type: "boolean", description: "Whether anything the candidate said evidenced this requirement." },
+        },
+        required: ["requirement", "evidenced"],
         additionalProperties: false,
       },
     },
   },
-  required: ["exchanges"],
+  required: ["exchanges", "strengths", "priorityImprovements", "resumeConsistency", "jdCoverage"],
   additionalProperties: false,
 } as const satisfies Record<string, unknown>;
 
@@ -303,8 +377,12 @@ exchange. For every sub-ask of every exchange, decide its coverage:
 - "ADDRESSED": the candidate substantively answered this specific sub-ask.
 - "PARTIAL": the candidate touched on it but left it incomplete or vague.
 - "NOT_ADDRESSED": the candidate never spoke to this sub-ask at all.
-- "DEFLECTED": the candidate visibly avoided or sidestepped this sub-ask rather than
-  simply omitting it.
+- "DEFLECTED": the candidate avoided this sub-ask rather than simply omitting it — a
+  vague, unrelated, or evasive response counts as deflection, not partial coverage. This
+  includes a sub-ask the interviewer re-asked as a direct follow-up after an earlier
+  non-answer: a second consecutive non-answer to the same underlying sub-ask, even when
+  the interviewer phrased the follow-up differently, is deflection, not a fresh partial
+  attempt.
 
 For any sub-ask you mark ADDRESSED or PARTIAL, you MUST provide "evidenceQuote" — a
 VERBATIM quote lifted directly from the candidate's own words in the exchange's
@@ -313,7 +391,34 @@ find a genuine verbatim quote supporting your verdict, do not claim ADDRESSED or
 this quote is verified against the transcript afterwards, and a fabricated one is treated
 as no evidence at all.
 
-Write a one-sentence "assessment" of how well this sub-ask was covered.
+Write a one-sentence "assessment" of how well this sub-ask was covered, and a
+"whatAGoodAnswerWouldHaveIncluded" note on what a strong answer to this specific sub-ask
+would have covered.
+
+For each exchange, set "starApplicable" to false when the question is purely technical or
+motivational and a STAR (Situation/Task/Action/Result) read would be a grade against a
+rubric that never applied to this question — otherwise true. When "starApplicable" is
+true, write a "starNote" giving the per-exchange STAR completeness read; when false, leave
+"starNote" as an empty string.
+
+For each exchange, also provide "score" — the candidate's performance on seven
+dimensions, each a 0 to 1 value on the same scale this tool's scoring ledger already
+uses: "s" (Situation), "tE" (Task/Environment), "a" (Action), "rT" (Result/Technique),
+"cS" (Communication Style), "aE" (Adaptability/Expertise), "rA" (Analytical Reasoning).
+Score every exchange even when "starApplicable" is false — "cS", "aE" and "rA" still
+apply to a purely technical or motivational question.
+
+At the end of your response, write session-level "strengths" and "priorityImprovements"
+summarising the interview as a whole.
+
+List "resumeConsistency" findings only where you can quote BOTH sides: a verbatim
+"spokenQuote" from the candidate's own words, and the specific "resumeLine" it may not
+square with. Frame each "note" as something to reconcile, not a discrepancy proven — the
+transcript is machine-generated and may have misheard the very detail in dispute. If you
+cannot quote both sides, do not report the finding at all.
+
+List "jdCoverage" findings for specific requirements drawn from the job description,
+stating in "evidenced" whether anything the candidate said evidenced that requirement.
 
 You must NEVER comment on, score, or imply anything about HOW the candidate spoke — not
 their accent, fluency, pace, filler words, or confidence. Judge only substantive content.
@@ -835,28 +940,73 @@ Instructions:
 ${activePrompt}
 `;
 
-      const { data, provider, model } = await generateJSON<{ exchanges?: unknown }>({
+      const { data, provider, model } = await generateJSON<{
+        exchanges?: unknown;
+        strengths?: unknown;
+        priorityImprovements?: unknown;
+        resumeConsistency?: unknown;
+        jdCoverage?: unknown;
+      }>({
         apiKey,
         system: "You are an expert interview assessor judging content only, never delivery.",
         prompt: promptPayload,
         schema: LIVE_FEEDBACK_SCHEMA,
       });
 
+      // The schema is a request, not a guarantee. An exchange missing a real
+      // index can't be matched back to a question (Pitfall 1); an unusable
+      // score would corrupt the ledger average it's not even wired to yet
+      // (Phase 7); and an unevidenced resumeConsistency item is exactly the
+      // unsupported accusation about a person D-69 forbids ever reaching the
+      // client. Every item below is dropped or coerced to a safe default
+      // here rather than trusted at face value.
       const validCoverage = new Set(["ADDRESSED", "PARTIAL", "NOT_ADDRESSED", "DEFLECTED"]);
+
+      const clampUnitOrNull = (raw: unknown): number | null => {
+        const n = typeof raw === "number" ? raw : Number(raw);
+        return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : null;
+      };
+
+      // An exchange's score object is coerced as a whole: if any of the
+      // seven fields is missing or unusable, the exchange gets no score at
+      // all rather than a mix of real numbers and silently-defaulted zeros.
+      const coerceScore = (
+        raw: any
+      ): { s: number; tE: number; a: number; rT: number; cS: number; aE: number; rA: number } | undefined => {
+        if (!raw || typeof raw !== "object") return undefined;
+        const s = clampUnitOrNull(raw.s);
+        const tE = clampUnitOrNull(raw.tE);
+        const a = clampUnitOrNull(raw.a);
+        const rT = clampUnitOrNull(raw.rT);
+        const cS = clampUnitOrNull(raw.cS);
+        const aE = clampUnitOrNull(raw.aE);
+        const rA = clampUnitOrNull(raw.rA);
+        if (s === null || tE === null || a === null || rT === null || cS === null || aE === null || rA === null) {
+          return undefined;
+        }
+        return { s, tE, a, rT, cS, aE, rA };
+      };
+
       const rawExchanges = data?.exchanges;
       const judged = (Array.isArray(rawExchanges) ? rawExchanges : [])
-        .filter((e: any) => e && Number.isInteger(e.exchangeIndex) && Array.isArray(e.subAsks))
+        .filter((e: any) => e && Number.isInteger(e.exchangeIndex) && Array.isArray(e.subAsks) && e.subAsks.length > 0)
         .map((e: any) => ({
           exchangeIndex: e.exchangeIndex,
           subAsks: (e.subAsks as any[])
             .filter((s) => s && typeof s.text === "string" && s.text.trim())
             .map((s) => ({
               text: s.text,
-              coverage: validCoverage.has(s.coverage) ? s.coverage : "NOT_ADDRESSED",
+              coverage: validCoverage.has(s.coverage) ? s.coverage : "PARTIAL",
               evidenceQuote: typeof s.evidenceQuote === "string" ? s.evidenceQuote : "",
               assessment: typeof s.assessment === "string" ? s.assessment : "",
+              whatAGoodAnswerWouldHaveIncluded:
+                typeof s.whatAGoodAnswerWouldHaveIncluded === "string" ? s.whatAGoodAnswerWouldHaveIncluded : "",
             })),
-        }));
+          starApplicable: e.starApplicable === true,
+          starNote: typeof e.starNote === "string" ? e.starNote : "",
+          score: coerceScore(e.score),
+        }))
+        .filter((e) => e.subAsks.length > 0);
 
       // Pitfall 1: array position alone is not a safe correlation key.
       // Every integer in 0..exchanges.length-1 must appear exactly once.
@@ -871,7 +1021,44 @@ ${activePrompt}
         });
       }
 
-      res.json({ exchanges: judged, modelUsed: model, provider });
+      // D-69: reported only when both the spoken side and the resume side
+      // are present — never in prose alone.
+      const rawResumeConsistency = data?.resumeConsistency;
+      const resumeConsistency = (Array.isArray(rawResumeConsistency) ? rawResumeConsistency : [])
+        .filter(
+          (r: any) =>
+            r &&
+            typeof r.spokenQuote === "string" &&
+            r.spokenQuote.trim() &&
+            typeof r.resumeLine === "string" &&
+            r.resumeLine.trim()
+        )
+        .map((r: any) => ({
+          spokenQuote: r.spokenQuote,
+          resumeLine: r.resumeLine,
+          note: typeof r.note === "string" ? r.note : "",
+        }));
+
+      const rawJdCoverage = data?.jdCoverage;
+      const jdCoverage = (Array.isArray(rawJdCoverage) ? rawJdCoverage : [])
+        .filter((j: any) => j && typeof j.requirement === "string" && j.requirement.trim())
+        .map((j: any) => ({
+          requirement: j.requirement,
+          evidenced: j.evidenced === true,
+        }));
+
+      const strengths = typeof data?.strengths === "string" ? data.strengths : "";
+      const priorityImprovements = typeof data?.priorityImprovements === "string" ? data.priorityImprovements : "";
+
+      res.json({
+        exchanges: judged,
+        strengths,
+        priorityImprovements,
+        resumeConsistency,
+        jdCoverage,
+        modelUsed: model,
+        provider,
+      });
     } catch (error: any) {
       console.error("Error in /api/interview/live-feedback:", error);
       fail(res, error, "An unexpected error occurred while judging the interview.");
