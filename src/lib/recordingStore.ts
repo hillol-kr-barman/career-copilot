@@ -14,32 +14,41 @@ import type {
  * into a growing `Blob` — incremental blob-append rewrites the whole
  * accumulated blob on every write, which is quadratic over a long interview.
  *
- * Schema: database `live_interview_recordings` at version 3, with store
+ * Schema: database `live_interview_recordings` at version 4, with store
  * `sessions` (keyPath `sessionId`), store `chunks` (keyPath
  * `["sessionId", "seq"]`, index `bySession` on `sessionId`), store `tags`
- * (`autoIncrement` key, index `bySession` on `sessionId`), and store
+ * (`autoIncrement` key, index `bySession` on `sessionId`), store
  * `transcript` (keyPath `["sessionId", "seq"]`, index `bySession` on
- * `sessionId` — added at version 3, D-42). Version 2 is a one-way,
- * non-migrating upgrade (D-28): `onupgradeneeded` drops and recreates
- * `sessions` and `chunks` rather than reading version-1 records forward,
- * because a version-1 session holds two interleaved chunk sequences this
- * reader cannot assemble into one file and the `chunks` keyPath itself
- * changes shape. Version 3 is a deliberate departure from that precedent
- * (D-43): a v2 take is fully readable (audio plus tag track), so the v3
- * branch only adds the new `transcript` store and touches `sessions`,
- * `chunks` and `tags` not at all — see the `onupgradeneeded` handler below
- * for the reasoning in full. Every read path here degrades to a safe empty
- * default on failure rather than throwing into the UI, mirroring
- * `loadContext`'s try/catch discipline in `src/App.tsx`.
+ * `sessionId` — added at version 3, D-42), and store `documents` (keyPath
+ * `sessionId`, no index — added at version 4, D-72). Version 2 is a
+ * one-way, non-migrating upgrade (D-28): `onupgradeneeded` drops and
+ * recreates `sessions` and `chunks` rather than reading version-1 records
+ * forward, because a version-1 session holds two interleaved chunk
+ * sequences this reader cannot assemble into one file and the `chunks`
+ * keyPath itself changes shape. Version 3 is a deliberate departure from
+ * that precedent (D-43): a v2 take is fully readable (audio plus tag
+ * track), so the v3 branch only adds the new `transcript` store and
+ * touches `sessions`, `chunks` and `tags` not at all. Version 4 follows
+ * the version-3 precedent, not the version-2 one: every version-3 take is
+ * fully readable, so the v4 branch only creates the new `documents` store
+ * — one stored feedback document per take, keyed directly by `sessionId`
+ * and replaced wholesale on regeneration (D-72) — and touches `sessions`,
+ * `chunks`, `tags` and `transcript` not at all. A version-3 take simply
+ * has no feedback document, which the takes list renders honestly rather
+ * than a state this upgrade needs to prevent. See the `onupgradeneeded`
+ * handler below for the reasoning in full. Every read path here degrades
+ * to a safe empty default on failure rather than throwing into the UI,
+ * mirroring `loadContext`'s try/catch discipline in `src/App.tsx`.
  */
 
 export const DB_NAME = "live_interview_recordings";
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 const SESSIONS_STORE = "sessions";
 const CHUNKS_STORE = "chunks";
 const TAGS_STORE = "tags";
 export const TRANSCRIPT_STORE = "transcript";
+export const DOCUMENTS_STORE = "documents";
 export const BY_SESSION_INDEX = "bySession";
 
 /**
@@ -98,6 +107,22 @@ export function openRecordingDB(options?: { autoCloseOnVersionChange?: boolean }
         // honestly rather than a state this upgrade needs to prevent.
         const transcriptStore = db.createObjectStore(TRANSCRIPT_STORE, { keyPath: ["sessionId", "seq"] });
         transcriptStore.createIndex(BY_SESSION_INDEX, "sessionId");
+      }
+      if (event.oldVersion < 4) {
+        // Additive only (D-72) — the same departure the v3 branch above
+        // already made from the v1->v2 wipe. A v3 take is fully readable
+        // (audio, tag track, and transcript all intact), so destroying
+        // anything to avoid rendering one extra "not yet analysed" state
+        // would be exactly the behind-your-back deletion D-32 refused.
+        // This branch therefore touches `sessions`, `chunks`, `tags` and
+        // `transcript` not at all: it only creates the new `documents`
+        // store. A v3 take simply has no feedback document, which is a
+        // state the takes list renders honestly rather than a state this
+        // upgrade needs to prevent. `keyPath: "sessionId"` (no index, not
+        // a compound key like `transcript`'s) because there is exactly one
+        // stored feedback document per take, replaced wholesale on
+        // regeneration — never a growing history.
+        db.createObjectStore(DOCUMENTS_STORE, { keyPath: "sessionId" });
       }
     };
     req.onsuccess = () => {
@@ -676,10 +701,10 @@ export function deleteRecordingDB(): Promise<DeleteRecordingDBOutcome> {
 }
 
 /**
- * Whether the `chunks` store, the `transcript` store, or the `sessions`
- * store holds at least one record. Uses a `count()` on each store rather
- * than reading records — the caller only needs a boolean and the audio
- * blobs are large.
+ * Whether the `chunks` store, the `transcript` store, the `documents`
+ * store, or the `sessions` store holds at least one record. Uses a
+ * `count()` on each store rather than reading records — the caller only
+ * needs a boolean and the audio blobs are large.
  *
  * Before this phase this checked only the `chunks` store, which was
  * sufficient while every take had audio. Once a take's audio can be deleted
@@ -687,8 +712,11 @@ export function deleteRecordingDB(): Promise<DeleteRecordingDBOutcome> {
  * answer "nothing is stored" while a full transcript still sits on disk —
  * and `App.tsx` gates the "Clear stored data" button on this function, so a
  * transcript-only take would strand that data behind a disabled control.
- * This checks all three stores so the question is honestly "is anything
- * stored", not "is there still audio".
+ * `DOCUMENTS_STORE` joins the list for the same reason (D-72, RESEARCH
+ * Pitfall 4): once a take can hold a feedback document with no audio left,
+ * "is anything stored" must not answer "no" while a generated document
+ * still sits on disk. This checks all four stores so the question is
+ * honestly "is anything stored", not "is there still audio".
  *
  * Degrades to `false` on any failure (mirrors `loadContext`'s
  * try/catch-to-safe-default discipline in `src/App.tsx`) — a private
@@ -699,7 +727,7 @@ export const hasStoredRecordings = async (): Promise<boolean> => {
   try {
     const db = await openRecordingDB();
     const counts = await Promise.all(
-      [CHUNKS_STORE, TRANSCRIPT_STORE, SESSIONS_STORE].map(
+      [CHUNKS_STORE, TRANSCRIPT_STORE, SESSIONS_STORE, DOCUMENTS_STORE].map(
         (storeName) =>
           new Promise<number>((resolve, reject) => {
             const tx = db.transaction(storeName, "readonly");
@@ -963,15 +991,22 @@ export async function closeRecoveredSession(sessionId: string): Promise<number> 
 }
 
 /**
- * Deletes one session record and all of its chunks, tag presses, and
- * transcript segments, using the `bySession` index on each store —
- * otherwise deleting a take orphans its tag track (or, since 05-02, its
- * transcript).
+ * Deletes one session record and all of its chunks, tag presses,
+ * transcript segments, and stored feedback document, using the
+ * `bySession` index on each multi-row store — otherwise deleting a take
+ * orphans its tag track (or, since 05-02, its transcript), or, since D-72,
+ * leaves an unreachable feedback document behind. `documents` is keyed
+ * directly by `sessionId` (one record per take, no index), so it is
+ * removed with a single key delete rather than a cursor walk.
  */
 const deleteSessionAndChunks = (db: IDBDatabase, sessionId: string): Promise<void> =>
   new Promise((resolve, reject) => {
-    const tx = db.transaction([SESSIONS_STORE, CHUNKS_STORE, TAGS_STORE, TRANSCRIPT_STORE], "readwrite");
+    const tx = db.transaction(
+      [SESSIONS_STORE, CHUNKS_STORE, TAGS_STORE, TRANSCRIPT_STORE, DOCUMENTS_STORE],
+      "readwrite"
+    );
     tx.objectStore(SESSIONS_STORE).delete(sessionId);
+    tx.objectStore(DOCUMENTS_STORE).delete(sessionId);
 
     const chunksIndex = tx.objectStore(CHUNKS_STORE).index(BY_SESSION_INDEX);
     const chunksCursorReq = chunksIndex.openCursor(IDBKeyRange.only(sessionId));
