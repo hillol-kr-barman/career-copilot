@@ -51,6 +51,13 @@ import {
 import { effectiveSpeaker, groupIntoTurns, moveTurnBoundary } from "../src/lib/transcriptTurns";
 import { formatTranscriptText } from "../src/lib/transcriptText";
 import { normalizeForMatch, findQuoteInSegments, fingerprintSegments } from "../src/lib/quoteMatcher";
+import {
+  screenDeliveryProse,
+  splitSentences,
+  DELIVERY_TERMS,
+  SCREENED_FIELD_PATHS,
+  WITHHELD_REMARK_MARKER,
+} from "../src/lib/deliveryScreen";
 import type { TagPress, RecordingSession, AudioChunkMeta, TagSpan, TranscriptSegment } from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
@@ -1651,6 +1658,185 @@ function makeSegment(overrides: Partial<TranscriptSegment> & { seq: number }): T
     fingerprintSegments(withCorrection),
     a,
     "fingerprintSegments must change when a segment's resolvedSpeaker changes"
+  );
+}
+
+// Phase 6 (LIVE-21, T-06-03): src/lib/deliveryScreen.ts — the server-side
+// D-67/D-68 delivery-scoring screen enforced inside the live-feedback route
+// handler, so a client calling the route directly gets the same treatment
+// as the app.
+
+// 1. A field whose only sentence names a prohibited dimension returns just
+// the marker, and withheldCount 1.
+{
+  const result = screenDeliveryProse("The candidate spoke with a strong accent.");
+  assert.equal(result.text, WITHHELD_REMARK_MARKER);
+  assert.equal(result.withheldCount, 1);
+}
+
+// 2. A field of three sentences where the middle one names a prohibited
+// dimension returns the first and third sentences joined, with the marker
+// appended once, and withheldCount 1 — the surviving neighbours are
+// preserved, not silently reworded.
+{
+  const result = screenDeliveryProse(
+    "The candidate covered the rollback plan well. Their pace was a bit rushed honestly. They also named the monitoring gap."
+  );
+  assert.equal(result.withheldCount, 1);
+  assert.ok(result.text.includes("The candidate covered the rollback plan well."));
+  assert.ok(result.text.includes("They also named the monitoring gap."));
+  assert.ok(!result.text.includes("pace"), "the offending sentence must not survive");
+  assert.equal(
+    result.text.split(WITHHELD_REMARK_MARKER).length - 1,
+    1,
+    "the marker must appear exactly once even though only one sentence was dropped"
+  );
+}
+
+// 3. A field with two offending sentences returns withheldCount 2, with the
+// marker appended once, not twice.
+{
+  const result = screenDeliveryProse("They seemed nervous throughout. Filler words were everywhere honestly.");
+  assert.equal(result.withheldCount, 2);
+  assert.equal(
+    result.text.split(WITHHELD_REMARK_MARKER).length - 1,
+    1,
+    "two withheld sentences must still produce exactly one marker"
+  );
+}
+
+// 4. A field with no offending sentence is returned byte-identical
+// (including its original whitespace), with withheldCount 0 and no marker.
+{
+  const clean = "  Solid, specific technical answer with real depth.  ";
+  const result = screenDeliveryProse(clean);
+  assert.equal(result.text, clean);
+  assert.equal(result.withheldCount, 0);
+  assert.ok(!result.text.includes(WITHHELD_REMARK_MARKER));
+}
+
+// 5. Empty, whitespace-only, and no-terminal-punctuation input are each
+// handled without throwing, and withhold nothing.
+{
+  assert.doesNotThrow(() => screenDeliveryProse(""));
+  assert.doesNotThrow(() => screenDeliveryProse("   "));
+  assert.doesNotThrow(() => screenDeliveryProse("no terminal punctuation here"));
+  assert.equal(screenDeliveryProse("").withheldCount, 0);
+  assert.equal(screenDeliveryProse("   ").withheldCount, 0);
+  assert.equal(screenDeliveryProse("no terminal punctuation here").withheldCount, 0);
+}
+
+// 6. Word-boundary matching only: "paceable", "confidential" and
+// "accentuate" must not trip "pace", "confident" and "accent".
+{
+  assert.equal(screenDeliveryProse("This design is paceable enough.").withheldCount, 0);
+  assert.equal(screenDeliveryProse("This document is confidential material.").withheldCount, 0);
+  assert.equal(screenDeliveryProse("This will accentuate the point.").withheldCount, 0);
+}
+
+// 7. Case-insensitive matching: a sentence opening with "Confident
+// delivery…" trips just as "confident delivery…" does.
+{
+  const upper = screenDeliveryProse("Confident delivery of the plan.");
+  const lower = screenDeliveryProse("confident delivery of the plan.");
+  assert.equal(upper.withheldCount, 1);
+  assert.equal(lower.withheldCount, 1);
+}
+
+// 8. When every sentence is dropped, the result is the marker alone, never
+// an empty string — an empty field would be exactly the silent edit D-32
+// and D-68 forbid.
+{
+  const result = screenDeliveryProse("Accent was noticeable. Nervous energy throughout.");
+  assert.equal(result.text, WITHHELD_REMARK_MARKER);
+  assert.notEqual(result.text, "");
+  assert.equal(result.withheldCount, 2);
+}
+
+// 9. splitSentences: no terminal punctuation returns the whole trimmed
+// string as a single element; empty/whitespace-only return [].
+{
+  assert.deepEqual(splitSentences("no terminal punctuation here"), ["no terminal punctuation here"]);
+  assert.deepEqual(splitSentences(""), []);
+  assert.deepEqual(splitSentences("   "), []);
+  assert.deepEqual(splitSentences("One. Two. Three."), ["One.", "Two.", "Three."]);
+}
+
+// 10. DELIVERY_TERMS carries, at minimum, the five dimensions LIVE-21 names
+// plus the two RESEARCH-flagged terms.
+{
+  for (const term of ["accent", "fluency", "articulate", "filler", "pace", "confidence", "nervousness"]) {
+    assert.ok(DELIVERY_TERMS.includes(term), `DELIVERY_TERMS must include "${term}"`);
+  }
+}
+
+// 11. SCREENED_FIELD_PATHS itself: exactly 6 entries, none of which is the
+// candidate's or the resume's own quoted words (RESEARCH Pitfall 2).
+{
+  assert.equal(SCREENED_FIELD_PATHS.length, 6);
+  for (const forbidden of ["evidenceQuote", "questionText", "answerText", "spokenQuote", "resumeLine"]) {
+    assert.ok(
+      !SCREENED_FIELD_PATHS.some((p) => p.endsWith(forbidden)),
+      `SCREENED_FIELD_PATHS must not screen "${forbidden}" — it is transcript-derived or quoted source material, not model commentary`
+    );
+  }
+}
+
+// 12. Schema-correspondence guard (RESEARCH Pitfall 2): every free-text
+// (`type: "string"`) property declared in server.ts's LIVE_FEEDBACK_SCHEMA
+// must be either the leaf of a SCREENED_FIELD_PATHS entry, or explicitly
+// excluded below with a one-line reason. This is static text analysis over
+// server.ts's source, not an import of it — server.ts performs real I/O
+// (starts an Express server, calls dotenv.config()) at module scope, which
+// is not safe to trigger from this assertion script.
+{
+  // Explicitly excluded free-text fields, each with the reason it is not
+  // screened. Adding a new free-text field to LIVE_FEEDBACK_SCHEMA that is
+  // in neither this list nor SCREENED_FIELD_PATHS fails this guard — that
+  // failure is the point: it means nobody decided whether the new field can
+  // carry a delivery remark.
+  const excludedStringFields: Record<string, string> = {
+    text: "the sub-ask's own text — structural, not a remark about the candidate",
+    source: "the asked/implied_by_jd tag — structural",
+    coverage: "the verdict enum value itself — structural",
+    evidenceQuote: "the candidate's own verbatim words — screening it would delete their own sentence",
+    questionText: "a verbatim transcript span of the interviewer's question — transcript-derived, not model commentary",
+    questionIntent: "a description of what the interviewer was probing for, not a remark about the candidate",
+    answerText: "a verbatim transcript span of the candidate's answer — transcript-derived, not model commentary",
+    requirement: "a JD requirement string — structural, not a remark about the candidate",
+    spokenQuote: "the candidate's own verbatim words — the same reason evidenceQuote is excluded",
+    resumeLine: "the resume's own words — quoted source material, not model commentary",
+  };
+
+  const serverPath = fileURLToPath(new URL("../server.ts", import.meta.url));
+  const serverSrc = readFileSync(serverPath, "utf8");
+
+  const schemaStart = serverSrc.indexOf("const LIVE_FEEDBACK_SCHEMA");
+  assert.ok(schemaStart !== -1, "server.ts must declare `const LIVE_FEEDBACK_SCHEMA`");
+  const closeMarker = "as const satisfies Record<string, unknown>;";
+  const schemaEnd = serverSrc.indexOf(closeMarker, schemaStart);
+  assert.ok(
+    schemaEnd !== -1,
+    "LIVE_FEEDBACK_SCHEMA must close with this file's own `as const satisfies Record<string, unknown>;` convention"
+  );
+  const schemaSrc = serverSrc.slice(schemaStart, schemaEnd);
+
+  const screenedLeaves = new Set(SCREENED_FIELD_PATHS.map((p) => p.split(".").pop()));
+
+  const stringPropertyPattern = /(\w+):\s*\{\s*type:\s*"string"/g;
+  const uncoveredFields: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = stringPropertyPattern.exec(schemaSrc)) !== null) {
+    const fieldName = match[1];
+    if (!screenedLeaves.has(fieldName) && !(fieldName in excludedStringFields)) {
+      uncoveredFields.push(fieldName);
+    }
+  }
+
+  assert.deepEqual(
+    uncoveredFields,
+    [],
+    `A new free-text field was added to LIVE_FEEDBACK_SCHEMA (${uncoveredFields.join(", ")}) without deciding whether it is screened for delivery commentary — a delivery remark can now slip through in a field nobody checked. Add it to SCREENED_FIELD_PATHS in src/lib/deliveryScreen.ts, or to excludedStringFields above with a one-line reason.`
   );
 }
 

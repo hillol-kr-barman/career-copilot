@@ -9,6 +9,7 @@ import mammoth from "mammoth";
 import { extractText, getDocumentProxy } from "unpdf";
 import { generate, generateJSON, resolveProvider } from "./providers";
 import { detectAiStatistically } from "./detector";
+import { screenDeliveryProse, SCREENED_FIELD_PATHS } from "./src/lib/deliveryScreen";
 
 dotenv.config();
 
@@ -425,6 +426,47 @@ their accent, fluency, pace, filler words, or confidence. Judge only substantive
 This instruction applies to every text field you produce.
 `;
 
+/**
+ * Walks exactly the dotted paths named in `src/lib/deliveryScreen.ts`'s
+ * `SCREENED_FIELD_PATHS` — a leaf segment is screened in place with
+ * `screenDeliveryProse`; a segment ending in `[]` means "descend into every
+ * element of this array." Driving the walk off the paths list itself, rather
+ * than a parallel hand-written set of field accesses, means the fields
+ * actually screened here can never silently drift from the fields
+ * `scripts/check-tag-track.ts`'s schema-correspondence guard checks against.
+ * Returns the summed `withheldCount` across every screened field.
+ */
+function applyDeliveryScreen(root: Record<string, any>, paths: readonly string[]): number {
+  let total = 0;
+  for (const path of paths) {
+    const segments = path.split(".");
+    const walk = (nodes: any[], segIndex: number) => {
+      if (segIndex >= segments.length) return;
+      const segment = segments[segIndex];
+      const isArraySegment = segment.endsWith("[]");
+      const key = isArraySegment ? segment.slice(0, -2) : segment;
+      const isLeaf = segIndex === segments.length - 1;
+      for (const node of nodes) {
+        if (!node || typeof node !== "object") continue;
+        const value = node[key];
+        if (isArraySegment) {
+          if (Array.isArray(value)) walk(value, segIndex + 1);
+        } else if (isLeaf) {
+          if (typeof value === "string") {
+            const result = screenDeliveryProse(value);
+            total += result.withheldCount;
+            node[key] = result.text;
+          }
+        } else if (value && typeof value === "object") {
+          walk([value], segIndex + 1);
+        }
+      }
+    };
+    walk([root], 0);
+  }
+  return total;
+}
+
 // ---------------------------------------------------------------------------
 // Resume text extraction
 // Real extraction only. If a format cannot be read, this reports failure rather
@@ -821,6 +863,13 @@ ${activePrompt}
   // segments (Pattern 2). Long-interview overflow is deliberately not
   // special-cased here (Pitfall 5): describeProviderError already surfaces
   // the provider's own message for that failure.
+  //
+  // Delivery-screen decision for this route's only model-authored prose
+  // field, stated explicitly rather than left unstated: `questionIntent` is
+  // NOT screened. It describes what the interviewer was probing for — a
+  // remark about the question, not about the candidate — the same reasoning
+  // `src/lib/deliveryScreen.ts`'s SCREENED_FIELD_PATHS comment gives for
+  // excluding it from the Assess response's screened paths.
   app.post("/api/interview/transcript/structure", async (req, res) => {
     try {
       const { transcriptText, jobDescription, resumeText, appliedPosition, customPrompt, apiKey } = req.body;
@@ -1050,12 +1099,26 @@ ${activePrompt}
       const strengths = typeof data?.strengths === "string" ? data.strengths : "";
       const priorityImprovements = typeof data?.priorityImprovements === "string" ? data.priorityImprovements : "";
 
+      // D-67/D-68/T-06-03: the delivery-scoring screen runs here, inside the
+      // route handler, over exactly SCREENED_FIELD_PATHS — not in the
+      // rendering component. The client is not the boundary: LIVE-21 is a
+      // fairness requirement named in REQUIREMENTS.md's Out of Scope table,
+      // not a UX preference, so a direct POST to this route from outside the
+      // app must get the same treatment as a call from the app. Walking
+      // SCREENED_FIELD_PATHS itself (rather than a parallel, hand-written
+      // list of field accesses) means the paths actually screened here can
+      // never silently drift from the paths scripts/check-tag-track.ts
+      // asserts against.
+      const screenedPayload = { exchanges: judged, resumeConsistency, strengths, priorityImprovements };
+      const withheldRemarkCount = applyDeliveryScreen(screenedPayload, SCREENED_FIELD_PATHS);
+
       res.json({
-        exchanges: judged,
-        strengths,
-        priorityImprovements,
-        resumeConsistency,
+        exchanges: screenedPayload.exchanges,
+        strengths: screenedPayload.strengths,
+        priorityImprovements: screenedPayload.priorityImprovements,
+        resumeConsistency: screenedPayload.resumeConsistency,
         jdCoverage,
+        withheldRemarkCount,
         modelUsed: model,
         provider,
       });
