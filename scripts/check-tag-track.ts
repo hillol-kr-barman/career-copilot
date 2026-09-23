@@ -50,6 +50,7 @@ import {
 } from "../src/lib/windowCutting";
 import { effectiveSpeaker, groupIntoTurns, moveTurnBoundary } from "../src/lib/transcriptTurns";
 import { formatTranscriptText } from "../src/lib/transcriptText";
+import { normalizeForMatch, findQuoteInSegments, fingerprintSegments } from "../src/lib/quoteMatcher";
 import type { TagPress, RecordingSession, AudioChunkMeta, TagSpan, TranscriptSegment } from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
@@ -1514,6 +1515,143 @@ function makeSegment(overrides: Partial<TranscriptSegment> & { seq: number }): T
         `but scripts/fetch-model.mjs downloads "${base}${actualSuffix}.onnx". With env.allowRemoteModels = false this is a hard 404 at runtime, not a silent CDN fallback.`
     );
   }
+}
+
+// Phase 6 (LIVE-16 Wave 0 gate): src/lib/quoteMatcher.ts — the shared
+// evidence-verification primitive for D-66, D-60, Pattern 2's exchange
+// boundary resolution, and D-69. `makeSegment` above already produces
+// well-formed TranscriptSegment fixtures; these blocks give it real text.
+
+// 1. Normalisation: lowercase, curly-quote folding (both single and
+// double), en/em dash folding, whitespace-run collapsing, and trim — all
+// five exercised in a single input.
+{
+  const input = "  The Manager’s “plan” – for Q3 — is   ready.  ";
+  const result = normalizeForMatch(input);
+  assert.equal(result, `the manager's "plan" - for q3 - is ready.`);
+}
+
+// 2. Verbatim match (LIVE-16 happy path): a quote taken verbatim from one
+// segment matches and resolves that segment's seq and startMs.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, text: "I led the migration to Kubernetes last year." }),
+    makeSegment({ seq: 1, text: "It cut our deploy time in half." }),
+  ];
+  const result = findQuoteInSegments("I led the migration to Kubernetes last year.", segments);
+  assert.equal(result.matched, true);
+  assert.equal(result.segmentSeq, 0);
+  assert.equal(result.startMs, segments[0].startMs);
+}
+
+// 3. Punctuation and case tolerance (D-66): the same quote in different
+// case, with curly quotes, and a trailing full stop still matches and
+// resolves the same segment.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, text: "We shipped it on the team’s deadline" }),
+  ];
+  const result = findQuoteInSegments("WE SHIPPED IT ON THE TEAM’S DEADLINE.", segments);
+  assert.equal(result.matched, true);
+  assert.equal(result.segmentSeq, 0);
+}
+
+// 4. Adjacency (LIVE-16 adjacency): a quote spanning two segments matches
+// and resolves to the segment its first character falls in, in both
+// directions.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, text: "The rollout broke because of a config" }),
+    makeSegment({ seq: 1, text: "drift between staging and prod." }),
+  ];
+  // Begins in segment 0, tail lands in segment 1 — resolves to 0.
+  const spanning = findQuoteInSegments("config drift between staging", segments);
+  assert.equal(spanning.matched, true);
+  assert.equal(spanning.segmentSeq, 0, "a quote whose first character falls in segment 0 must resolve to segment 0 even when its tail extends into segment 1");
+
+  // Begins in segment 1 entirely — resolves to 1, not 0 (the converse).
+  const secondOnly = findQuoteInSegments("drift between staging and prod", segments);
+  assert.equal(secondOnly.matched, true);
+  assert.equal(secondOnly.segmentSeq, 1, "a quote that begins in segment 1 must resolve to segment 1, not segment 0");
+}
+
+// 5. Empty and degenerate input (LIVE-16 empty): each returns matched:false,
+// never throws, and never returns a segmentSeq. A single-segment array with
+// a matching quote still resolves.
+{
+  const segments: TranscriptSegment[] = [makeSegment({ seq: 0, text: "one lonely segment here" })];
+
+  assert.deepEqual(findQuoteInSegments("", segments), { matched: false });
+  assert.deepEqual(findQuoteInSegments("   ", segments), { matched: false });
+  assert.deepEqual(findQuoteInSegments("anything", []), { matched: false });
+  assert.deepEqual(findQuoteInSegments("...", segments), { matched: false }, "pure punctuation must not match");
+
+  const singleSegmentMatch = findQuoteInSegments("lonely segment", segments);
+  assert.equal(singleSegmentMatch.matched, true);
+  assert.equal(singleSegmentMatch.segmentSeq, 0);
+}
+
+// 6. No-match is a hard miss, not a near-match (D-66): a quote differing by
+// one whole word returns matched:false — pins "a miss downgrades rather
+// than fuzzily accepting."
+{
+  const segments: TranscriptSegment[] = [makeSegment({ seq: 0, text: "I owned the entire migration end to end" })];
+  const result = findQuoteInSegments("I owned the entire rollout end to end", segments);
+  assert.equal(result.matched, false, "a one-word difference must be a hard miss, not a fuzzy accept");
+}
+
+// 7. Ordering determinism (LIVE-16 ordering): the identical normalized
+// phrase present in two segments resolves to the earlier one by
+// startMs/seq, is stable across repeated calls, holds when the input array
+// is reversed (proving the internal sort), and never mutates its input.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, text: "we hit the deadline" }),
+    makeSegment({ seq: 1, text: "unrelated filler here" }),
+    makeSegment({ seq: 2, text: "we hit the deadline" }),
+  ];
+  const first = findQuoteInSegments("we hit the deadline", segments);
+  assert.equal(first.matched, true);
+  assert.equal(first.segmentSeq, 0, "a phrase present in two segments must resolve to the earlier one");
+
+  const second = findQuoteInSegments("we hit the deadline", segments);
+  assert.deepEqual(second, first, "calling findQuoteInSegments twice on the same input must return an identical result");
+
+  const reversed = [...segments].reverse();
+  const originalOrder = reversed.map((s) => s.seq);
+  const fromReversed = findQuoteInSegments("we hit the deadline", reversed);
+  assert.equal(fromReversed.segmentSeq, 0, "the result must not depend on input array order — this proves the internal sort");
+  assert.deepEqual(reversed.map((s) => s.seq), originalOrder, "the input array must not be mutated");
+}
+
+// 8. Fingerprint (staleness input for D-51/D-71): stable across two calls,
+// identical for the same segments in a different array order, and
+// different when one segment's resolvedSpeaker changes.
+{
+  const segments: TranscriptSegment[] = [
+    makeSegment({ seq: 0, text: "first segment", speaker: "interviewer" }),
+    makeSegment({ seq: 1, text: "second segment", speaker: "candidate" }),
+  ];
+
+  const a = fingerprintSegments(segments);
+  const b = fingerprintSegments(segments);
+  assert.equal(a, b, "fingerprintSegments must be stable across two calls on the same input");
+
+  const reordered = [...segments].reverse();
+  assert.equal(
+    fingerprintSegments(reordered),
+    a,
+    "fingerprintSegments must be identical for the same segments passed in a different array order"
+  );
+
+  const withCorrection = segments.map((s) =>
+    s.seq === 1 ? { ...s, resolvedSpeaker: "interviewer" as const } : s
+  );
+  assert.notEqual(
+    fingerprintSegments(withCorrection),
+    a,
+    "fingerprintSegments must change when a segment's resolvedSpeaker changes"
+  );
 }
 
 console.log("check-tag-track: all assertions passed");
