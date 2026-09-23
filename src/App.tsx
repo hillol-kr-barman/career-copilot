@@ -258,7 +258,12 @@ export default function App() {
 
         <InterviewPrep context={context} apiKey={apiKey} />
 
-        <LiveInterview clearedAt={clearedAt} onRecordingStored={() => setHasRecordings(true)} />
+        <LiveInterview
+          context={context}
+          apiKey={apiKey}
+          clearedAt={clearedAt}
+          onRecordingStored={() => setHasRecordings(true)}
+        />
 
         <StoredDataNotice
           hasResume={Boolean(context.resumeText.trim())}

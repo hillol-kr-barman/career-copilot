@@ -232,3 +232,126 @@ export interface TranscriptTurn {
   segments: TranscriptSegment[];
   corrected: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6 — the feedback document (LIVE-15..21). This is the architecture:
+// later plans in this phase fill fields (D-73's ScoreRow, D-69's resume
+// findings, D-65's rollups) but do not reshape these shapes.
+// ---------------------------------------------------------------------------
+
+/**
+ * The four-value verdict a sub-ask is judged against (D-66). `DEFLECTED`
+ * stays a separate value from `NOT_ADDRESSED` — a candidate who visibly
+ * dodged a question is a different finding from one who was simply never
+ * asked to answer it, and collapsing the two would erase that distinction
+ * from every downstream rollup.
+ */
+export type Coverage = "ADDRESSED" | "PARTIAL" | "NOT_ADDRESSED" | "DEFLECTED";
+
+/**
+ * Whether a sub-ask was actually asked out loud, or is implied by the job
+ * description against a question that never named it (D-65). The
+ * silent-gaps headline (LIVE-17) collects only `"asked"` sub-asks; an
+ * `"implied_by_jd"` sub-ask that was never addressed is a missed follow-up
+ * (LIVE-18) instead, a different claim about the candidate.
+ */
+export type SubAskSource = "asked" | "implied_by_jd";
+
+/**
+ * One discrete thing a complete answer to an exchange's question must cover
+ * (LIVE-15). `evidenceQuote` is the model's claimed verbatim quote from the
+ * candidate's own words; `evidenceSegmentSeq`/`evidenceStartMs` are resolved
+ * by `src/lib/quoteMatcher.ts` against the stored transcript, never
+ * model-authored (Pattern 2) — a match sets them, a miss leaves them
+ * `undefined` and sets `quoteUnverified` (D-66).
+ */
+export interface SubAsk {
+  text: string;
+  source: SubAskSource;
+  coverage: Coverage;
+  evidenceQuote: string;
+  /** Resolved by the quote matcher on a match. Never model-authored. */
+  evidenceSegmentSeq?: number;
+  /** Resolved by the quote matcher on a match. Never model-authored. */
+  evidenceStartMs?: number;
+  /** True when `evidenceQuote` matched no stored segment (D-66) — the
+   * verdict has already been downgraded from `ADDRESSED` to `PARTIAL` by the
+   * time this is set; the document states no quotable evidence was found. */
+  quoteUnverified: boolean;
+  assessment: string;
+  whatAGoodAnswerWouldHaveIncluded: string;
+}
+
+/**
+ * One substantive interviewer question and its decomposition (D-64: only
+ * questions a candidate can be judged on become exchanges — greetings,
+ * scheduling and closing pleasantries produce none). `startMs`/`endMs` are
+ * resolved by matching `questionText`/`answerText` against interviewer- and
+ * candidate-attributed segments respectively (Pattern 2) — never asked of
+ * the model, for the same reason a quote's segment reference never is.
+ */
+export interface Exchange {
+  exchangeIndex: number;
+  questionText: string;
+  questionIntent: string;
+  answerText: string;
+  subAsks: SubAsk[];
+  /** Resolved by matching `questionText` against interviewer segments. Never model-authored. */
+  startMs?: number;
+  /** Resolved by matching `answerText` against candidate segments. Never model-authored. */
+  endMs?: number;
+  /** D-73: the seven raw `ScoreRow` fields plus the two derived averages,
+   * populated by a later plan in this phase. `ScoreRow` itself is untouched. */
+  scoreRow?: ScoreRow;
+  /** D-73's open risk: a STAR read only applies where the question actually
+   * calls for one. A later plan renders the STAR read only when this is true. */
+  starApplicable: boolean;
+  starNote: string;
+}
+
+/**
+ * A candidate's spoken claim that may not square with their resume (D-69).
+ * Reported only when both sides are quoted — `spokenQuote` must pass the
+ * same quote-matcher verification as a sub-ask's `evidenceQuote` before this
+ * finding is ever shown; a later plan enforces that gate.
+ */
+export interface ResumeConsistencyFinding {
+  spokenQuote: string;
+  /** Resolved by the quote matcher on a match. Never model-authored. */
+  spokenSegmentSeq?: number;
+  /** Resolved by the quote matcher on a match. Never model-authored. */
+  spokenStartMs?: number;
+  resumeLine: string;
+  note: string;
+}
+
+/** One job-description requirement and whether the interview ever produced evidence for it (LIVE-19). */
+export interface JdCoverageItem {
+  requirement: string;
+  evidenced: boolean;
+}
+
+/**
+ * The stored, generated document for one take (D-72 — persisted in
+ * IndexedDB by a later plan). `transcriptFingerprint` is
+ * `fingerprintSegments(segments)` at generation time, the input a later
+ * plan's staleness check compares against a live re-fingerprint after a
+ * D-51 speaker correction.
+ */
+export interface FeedbackDocument {
+  sessionId: string;
+  generatedAt: number;
+  modelUsed?: string;
+  provider?: string;
+  transcriptFingerprint: string;
+  exchanges: Exchange[];
+  resumeConsistency: ResumeConsistencyFinding[];
+  jdCoverage: JdCoverageItem[];
+  strengths: string;
+  priorityImprovements: string;
+  /** How many delivery-related remarks the D-67/D-68 server-side screen withheld from this document. */
+  withheldRemarkCount: number;
+}
+
+/** D-62's progress state for the two-call pipeline behind one button. */
+export type FeedbackStage = "idle" | "structuring" | "judging" | "done";

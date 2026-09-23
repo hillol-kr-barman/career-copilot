@@ -9,10 +9,12 @@ import { RecordingDownloads } from "../components/RecordingDownloads";
 import { MicSetup } from "../components/MicSetup";
 import type { ModelStatus } from "../components/MicSetup";
 import { TranscriptView } from "../components/TranscriptView";
+import { LiveInterviewFeedback } from "../components/LiveInterviewFeedback";
+import { findQuoteInSegments, fingerprintSegments } from "../lib/quoteMatcher";
 import { startTranscriptionSession, warmUpWhisper } from "../lib/transcriptionSession";
 import type { TranscriptionSessionHandle, TranscriptionStatus } from "../lib/transcriptionSession";
 import { readSegments, applyResolvedSpeakers, countSegments } from "../lib/transcriptStore";
-import { groupIntoTurns, moveTurnBoundary } from "../lib/transcriptTurns";
+import { effectiveSpeaker, groupIntoTurns, moveTurnBoundary } from "../lib/transcriptTurns";
 import { formatTranscriptText } from "../lib/transcriptText";
 import {
   acquireMic,
@@ -49,7 +51,19 @@ import {
 } from "../lib/recordingStore";
 import type { ResumableSessionInfo } from "../lib/recordingStore";
 import { downloadBlob, downloadJson, downloadText } from "../lib/download";
-import type { CaptureStatus, RecordingSession, Speaker, TagTrackSidecar, TranscriptSegment } from "../types";
+import type {
+  CaptureStatus,
+  Coverage,
+  Exchange,
+  FeedbackDocument,
+  FeedbackStage,
+  RecordingSession,
+  SharedContext,
+  Speaker,
+  SubAsk,
+  TagTrackSidecar,
+  TranscriptSegment,
+} from "../types";
 import type { RecordingWarning } from "../components/RecordingControls";
 
 /** Copy from the UI-SPEC Copywriting Contract — a recovered session whose
@@ -58,6 +72,13 @@ const RECOVERY_FAILED_COPY =
   "This recording couldn't be recovered — the saved data may be corrupted or incomplete. It has been discarded automatically.";
 
 interface LiveInterviewProps {
+  /**
+   * D-70: the shared inputs and the visitor's API key. Tool 4's capture and
+   * transcription stay keyless and input-free regardless of these — only
+   * the feedback surface gates on them, inside its own component.
+   */
+  context: SharedContext;
+  apiKey: string;
   /**
    * Bumped by App.tsx's "Clear stored data" handler the moment
    * `deleteRecordingDB` actually confirms the database is gone (LIVE-09) —
@@ -88,7 +109,12 @@ interface LiveInterviewProps {
  * (D-13). Audio never leaves this browser: nothing this section touches
  * makes a network call.
  */
-export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onRecordingStored }) => {
+export const LiveInterview: React.FC<LiveInterviewProps> = ({
+  context,
+  apiKey,
+  clearedAt = 0,
+  onRecordingStored,
+}) => {
   const [status, setStatus] = useState<CaptureStatus>("idle");
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [session, setSession] = useState<RecordingSession | null>(null);
@@ -215,8 +241,23 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
   // line from firing the correction twice while its write is in flight.
   const [correctingSeqs, setCorrectingSeqs] = useState<Record<number, boolean>>({});
 
-  // This chain gates on browser capability only, never on resume, job
-  // description or API key — Tool 4 needs no key at all.
+  // Phase 6 (D-62): the two-call feedback pipeline for the currently loaded
+  // take. `feedbackExchanges` is set only on Structure's own success and is
+  // never touched by Assess's catch block (Pitfall 3, D-63) — a failed
+  // Assess call keeps these on screen and offers "Try judging again".
+  // `feedbackDocument` is the fully assembled, quote-verified document, set
+  // only once Assess succeeds. All four reset together in handleStartOver
+  // and whenever the stopped-take pointer clears (handleAcceptConsent).
+  const [feedbackExchanges, setFeedbackExchanges] = useState<Exchange[]>([]);
+  const [feedbackDocument, setFeedbackDocument] = useState<FeedbackDocument | null>(null);
+  const [feedbackStage, setFeedbackStage] = useState<FeedbackStage>("idle");
+  const [feedbackError, setFeedbackError] = useState("");
+
+  // D-70: this chain gates on browser capability alone — recording,
+  // consent, mic setup and transcription stay keyless and input-free.
+  // Phase 6 added the feedback step, which is the one part of Tool 4 that
+  // needs an API key, a resume and a job description — it carries its own
+  // inline lock inside LiveInterviewFeedback rather than widening this chain.
   const lockedReason = !captureSupported
     ? CAPTURE_UNSUPPORTED_REASON
     : formatUnsupported
@@ -633,6 +674,12 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
       setTranscriptionStatus(null);
       setTranscriptSkippedCount(0);
       setTranscriptionWarning(null);
+      // Phase 6: the finished take's feedback document is a fact about THAT
+      // take too — the same reasoning as clearing transcriptSegments above.
+      setFeedbackExchanges([]);
+      setFeedbackDocument(null);
+      setFeedbackStage("idle");
+      setFeedbackError("");
     }
     setHasConsented(true);
     // D-55: this take's keep-audio answer, settled before a byte exists.
@@ -1266,6 +1313,187 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
     }
   };
 
+  /**
+   * D-62's second call, split out so both handleGenerateFeedback and
+   * handleRetryJudging share it. Structurally its own try/catch (Pitfall 3,
+   * D-63) — nothing in this catch ever touches `feedbackExchanges`, so a
+   * failed Assess call always leaves Structure's exchanges on screen.
+   */
+  const runAssess = async (structuredExchanges: Exchange[]) => {
+    setFeedbackError("");
+    setFeedbackStage("judging");
+    try {
+      const response = await fetch("/api/interview/live-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          exchanges: structuredExchanges.map((exchange) => ({
+            exchangeIndex: exchange.exchangeIndex,
+            questionText: exchange.questionText,
+            questionIntent: exchange.questionIntent,
+            answerText: exchange.answerText,
+            subAsks: exchange.subAsks.map((subAsk) => ({ text: subAsk.text, source: subAsk.source })),
+          })),
+          jobDescription: context.jobDescription,
+          resumeText: context.resumeText,
+          appliedPosition: context.appliedPosition,
+          apiKey,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not judge the interview.");
+
+      const verdictsByIndex = new Map<number, { subAsks: { text: string; coverage: string; evidenceQuote: string; assessment: string }[] }>(
+        (data.exchanges as any[]).map((e) => [e.exchangeIndex, e])
+      );
+
+      // D-49: attribution is always resolvedSpeaker ?? speaker, never
+      // re-derived from spans.
+      const candidateSegments = transcriptSegments.filter((s) => effectiveSpeaker(s) === "candidate");
+      const interviewerSegments = transcriptSegments.filter((s) => effectiveSpeaker(s) === "interviewer");
+
+      const judgedExchanges: Exchange[] = structuredExchanges.map((exchange) => {
+        const verdict = verdictsByIndex.get(exchange.exchangeIndex);
+        const verdictByText = new Map(
+          (verdict?.subAsks ?? []).map((subAsk) => [subAsk.text, subAsk])
+        );
+
+        const subAsks: SubAsk[] = exchange.subAsks.map((subAsk) => {
+          const judged = verdictByText.get(subAsk.text);
+          if (!judged) return subAsk;
+
+          // D-66: a claimed quote is verified against the stored segments —
+          // a miss downgrades ADDRESSED to PARTIAL rather than being
+          // silently trusted.
+          const quoteMatch = findQuoteInSegments(judged.evidenceQuote, candidateSegments);
+          let coverage = (judged.coverage as Coverage) ?? "NOT_ADDRESSED";
+          const claimsEvidence = coverage === "ADDRESSED" || coverage === "PARTIAL";
+          const quoteUnverified = claimsEvidence && !quoteMatch.matched;
+          if (quoteUnverified && coverage === "ADDRESSED") coverage = "PARTIAL";
+
+          return {
+            ...subAsk,
+            coverage,
+            evidenceQuote: judged.evidenceQuote,
+            evidenceSegmentSeq: quoteMatch.matched ? quoteMatch.segmentSeq : undefined,
+            evidenceStartMs: quoteMatch.matched ? quoteMatch.startMs : undefined,
+            quoteUnverified,
+            assessment: judged.assessment,
+          };
+        });
+
+        // Pattern 2: never ask the model for a timestamp — resolve the
+        // exchange's boundary by matching its own verbatim spans against
+        // the segments they were attributed to.
+        const questionMatch = findQuoteInSegments(exchange.questionText, interviewerSegments);
+        const answerMatch = findQuoteInSegments(exchange.answerText, candidateSegments);
+
+        return {
+          ...exchange,
+          subAsks,
+          startMs: questionMatch.matched ? questionMatch.startMs : undefined,
+          endMs: answerMatch.matched ? answerMatch.startMs : undefined,
+        };
+      });
+
+      judgedExchanges.sort(
+        (a, b) => (a.startMs ?? 0) - (b.startMs ?? 0) || a.exchangeIndex - b.exchangeIndex
+      );
+
+      if (!session) return;
+
+      const assembled: FeedbackDocument = {
+        sessionId: session.sessionId,
+        generatedAt: Date.now(),
+        modelUsed: data.modelUsed,
+        provider: data.provider,
+        transcriptFingerprint: fingerprintSegments(transcriptSegments),
+        exchanges: judgedExchanges,
+        resumeConsistency: [],
+        jdCoverage: [],
+        strengths: "",
+        priorityImprovements: "",
+        withheldRemarkCount: 0,
+      };
+
+      setFeedbackDocument(assembled);
+      setFeedbackStage("done");
+    } catch (err: any) {
+      setFeedbackError(err?.message || "Could not reach the model.");
+      setFeedbackStage("idle");
+    }
+  };
+
+  /**
+   * D-62: Structure then Assess behind one button, on the already-loaded
+   * stopped take. `feedbackExchanges` is set only on Structure's own
+   * success (Pitfall 3) — see `runAssess`'s doc comment for the Assess side
+   * of D-63's guarantee.
+   */
+  const handleGenerateFeedback = async () => {
+    if (!session || transcriptSegments.length === 0) return;
+    setFeedbackError("");
+    setFeedbackStage("structuring");
+    setFeedbackDocument(null);
+
+    let structuredExchanges: Exchange[];
+    try {
+      const transcriptText = formatTranscriptText(session, transcriptSegments);
+      const response = await fetch("/api/interview/transcript/structure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcriptText,
+          jobDescription: context.jobDescription,
+          resumeText: context.resumeText,
+          appliedPosition: context.appliedPosition,
+          apiKey,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not structure the transcript.");
+
+      structuredExchanges = (data.exchanges as any[]).map((exchange) => ({
+        exchangeIndex: exchange.exchangeIndex,
+        questionText: exchange.questionText,
+        questionIntent: exchange.questionIntent,
+        answerText: exchange.answerText,
+        subAsks: (exchange.subAsks as any[]).map((subAsk) => ({
+          text: subAsk.text,
+          source: subAsk.source,
+          coverage: "NOT_ADDRESSED" as Coverage,
+          evidenceQuote: "",
+          quoteUnverified: false,
+          assessment: "",
+          whatAGoodAnswerWouldHaveIncluded: "",
+        })),
+        starApplicable: false,
+        starNote: "",
+      }));
+      setFeedbackExchanges(structuredExchanges);
+    } catch (err: any) {
+      setFeedbackError(err?.message || "Could not reach the model.");
+      setFeedbackStage("idle");
+      return;
+    }
+
+    await runAssess(structuredExchanges);
+  };
+
+  const handleRetryJudging = () => {
+    if (feedbackExchanges.length === 0) return;
+    void runAssess(feedbackExchanges);
+  };
+
+  const handleStartOver = () => {
+    setFeedbackExchanges([]);
+    setFeedbackDocument(null);
+    setFeedbackStage("idle");
+    setFeedbackError("");
+  };
+
   const warnings: RecordingWarning[] = [];
   if (transcriptionWarning) {
     warnings.push({ id: "transcription", message: transcriptionWarning });
@@ -1389,6 +1617,29 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({ clearedAt = 0, onR
               realtimeFactor={modelStatus.realtimeFactor}
             />
           </>
+        )}
+
+        {/* D-61: the feedback surface mounts below TranscriptView and above
+            RecordingDownloads, as a sibling of the consent branch above so
+            re-consenting for the next take (which resets hasConsented, D-34)
+            can never hide the just-finished take's document (the same
+            reasoning D-31 already applies to the downloads list below).
+            Renders only once there is a stopped take with a transcript to
+            analyse — the "already-loaded stopped take" this tracer wires. */}
+        {session && session.status === "stopped" && transcriptSegments.length > 0 && (
+          <LiveInterviewFeedback
+            sessionId={session.sessionId}
+            segments={transcriptSegments}
+            context={context}
+            apiKey={apiKey}
+            document={feedbackDocument}
+            stage={feedbackStage}
+            error={feedbackError}
+            hasExchanges={feedbackExchanges.length > 0}
+            onGenerate={handleGenerateFeedback}
+            onRetryJudging={handleRetryJudging}
+            onStartOver={handleStartOver}
+          />
         )}
 
         {/* D-31: every stopped take, newest-first — a sibling of the consent

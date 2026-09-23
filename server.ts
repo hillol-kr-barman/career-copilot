@@ -170,6 +170,88 @@ const QA_SCHEMA = {
   additionalProperties: false,
 } as const satisfies Record<string, unknown>;
 
+/**
+ * Structured-output contract for the Structure call (LIVE-15). Deliberately
+ * carries NO millisecond or timestamp field — those are resolved client-side
+ * by `src/lib/quoteMatcher.ts` (Pattern 2), never model-supplied.
+ */
+const STRUCTURE_SCHEMA = {
+  type: "object",
+  properties: {
+    exchanges: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          exchangeIndex: { type: "integer", description: "0-based index, dense from 0 over this response's own exchanges." },
+          questionText: { type: "string", description: "Verbatim span copied from the transcript — never a paraphrase." },
+          questionIntent: { type: "string", description: "One short sentence on what the interviewer was probing for." },
+          answerText: { type: "string", description: "Verbatim span copied from the transcript — never a paraphrase." },
+          subAsks: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "The discrete thing a complete answer must cover." },
+                source: { type: "string", description: "Either \"asked\" or \"implied_by_jd\"." },
+              },
+              required: ["text", "source"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["exchangeIndex", "questionText", "questionIntent", "answerText", "subAsks"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["exchanges"],
+  additionalProperties: false,
+} as const satisfies Record<string, unknown>;
+
+/**
+ * Structured-output contract for the Assess call (LIVE-16 tracer subset —
+ * plan 06-02 extends this with the D-73 ScoreRow fields, the STAR
+ * applicability flag, and the session-level rollup fields). `exchangeIndex`
+ * is required so the response can be correlated back to Structure's exact
+ * exchanges by index rather than by trusting array order (Pitfall 1).
+ */
+const LIVE_FEEDBACK_SCHEMA = {
+  type: "object",
+  properties: {
+    exchanges: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          exchangeIndex: { type: "integer", description: "Must match one of Structure's own exchangeIndex values exactly." },
+          subAsks: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "Must match the sub-ask's own text from Structure's output." },
+                coverage: { type: "string", description: "One of: ADDRESSED, PARTIAL, NOT_ADDRESSED, DEFLECTED." },
+                evidenceQuote: {
+                  type: "string",
+                  description: "Verbatim quote from the candidate's own words. Empty string when coverage is NOT_ADDRESSED or DEFLECTED.",
+                },
+                assessment: { type: "string", description: "One sentence on how well this sub-ask was covered." },
+              },
+              required: ["text", "coverage", "evidenceQuote", "assessment"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["exchangeIndex", "subAsks"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["exchanges"],
+  additionalProperties: false,
+} as const satisfies Record<string, unknown>;
+
 const DEFAULT_EVALUATION_PROMPT = `
 You are an expert Talent Acquisition Assessor. Match the given question-by-question scoring and summary metrics against the job description and interview transcripts.
 Write a structured Candidate Evaluation Report containing:
@@ -178,6 +260,64 @@ Write a structured Candidate Evaluation Report containing:
 3. Priority Gaps and Areas of Concern.
 4. Actionable onboarding advice or next-stage discussion items.
 Ensure a clear, objective, professional tone.
+`;
+
+// ---------------------------------------------------------------------------
+// Phase 6 — the two-call feedback pipeline (LIVE-15/16). Structure extracts
+// exchanges and their sub-asks from the raw transcript; Assess judges each
+// sub-ask against the four-value verdict set. Neither call is ever asked for
+// a millisecond or a segment id — every time reference is resolved
+// client-side by src/lib/quoteMatcher.ts (Pattern 2).
+// ---------------------------------------------------------------------------
+
+const DEFAULT_TRANSCRIPT_STRUCTURE_PROMPT = `
+You are analysing a two-party job interview transcript to structure it for assessment.
+
+Read the transcript and identify each place the interviewer asked something a candidate
+can actually be judged on. Greetings, scheduling, logistics, and closing pleasantries
+("we'll be in touch", "any questions for us?") are NOT substantive questions — produce no
+exchange for them. If the interviewer interrupts an answer with a clarification, that
+clarification is part of the SAME exchange it interrupted — do not open a new one for it.
+
+For each substantive exchange:
+- Copy "questionText" and "answerText" as VERBATIM spans lifted directly out of the
+  transcript — never paraphrase them. They are matched against the transcript afterwards,
+  and a span that cannot be matched is treated as unverified, so accuracy here matters more
+  than tidiness.
+- Write a short "questionIntent" describing what the interviewer was really probing for.
+- Decompose the question into its discrete sub-asks — the separate things a complete answer
+  would need to cover. A multi-part question ("tell me about a time X: what happened, what
+  you changed, what you'd do differently") must decompose into multiple sub-asks, not one.
+- Mark each sub-ask's "source" as "asked" when the interviewer said it outright, or
+  "implied_by_jd" when the job description implies a candidate should address it even
+  though the interviewer's words did not name it directly.
+
+You must NEVER comment on, score, or imply anything about HOW the candidate spoke —
+not their accent, fluency, pace, filler words, or confidence. Judge only what substantive
+content was asked and said. This instruction applies to every text field you produce.
+`;
+
+const DEFAULT_LIVE_FEEDBACK_PROMPT = `
+You are judging how thoroughly a candidate answered each already-extracted interview
+exchange. For every sub-ask of every exchange, decide its coverage:
+- "ADDRESSED": the candidate substantively answered this specific sub-ask.
+- "PARTIAL": the candidate touched on it but left it incomplete or vague.
+- "NOT_ADDRESSED": the candidate never spoke to this sub-ask at all.
+- "DEFLECTED": the candidate visibly avoided or sidestepped this sub-ask rather than
+  simply omitting it.
+
+For any sub-ask you mark ADDRESSED or PARTIAL, you MUST provide "evidenceQuote" — a
+VERBATIM quote lifted directly from the candidate's own words in the exchange's
+answerText, proving the coverage you assigned. Never paraphrase the quote. If you cannot
+find a genuine verbatim quote supporting your verdict, do not claim ADDRESSED or PARTIAL —
+this quote is verified against the transcript afterwards, and a fabricated one is treated
+as no evidence at all.
+
+Write a one-sentence "assessment" of how well this sub-ask was covered.
+
+You must NEVER comment on, score, or imply anything about HOW the candidate spoke — not
+their accent, fluency, pace, filler words, or confidence. Judge only substantive content.
+This instruction applies to every text field you produce.
 `;
 
 // ---------------------------------------------------------------------------
@@ -565,6 +705,176 @@ ${activePrompt}
     } catch (error: any) {
       console.error("Error in /api/interview/questions:", error);
       fail(res, error, "An unexpected error occurred during interview question generation.");
+    }
+  });
+
+  // 2a. Live Interview — Structure Stage (LIVE-15, D-62's first call)
+  //
+  // Decomposes a raw transcript into substantive exchanges and their
+  // sub-asks. No timestamp field is requested — the client resolves every
+  // time reference by matching questionText/answerText against stored
+  // segments (Pattern 2). Long-interview overflow is deliberately not
+  // special-cased here (Pitfall 5): describeProviderError already surfaces
+  // the provider's own message for that failure.
+  app.post("/api/interview/transcript/structure", async (req, res) => {
+    try {
+      const { transcriptText, jobDescription, resumeText, appliedPosition, customPrompt, apiKey } = req.body;
+
+      if (!transcriptText || typeof transcriptText !== "string" || !transcriptText.trim()) {
+        return res.status(400).json({ error: "A transcript is required." });
+      }
+
+      const activePrompt = (customPrompt && customPrompt.trim()) || DEFAULT_TRANSCRIPT_STRUCTURE_PROMPT;
+
+      const promptPayload = `
+Applied Position:
+${appliedPosition || "Not specified — infer the target role from the job description."}
+
+Job Description:
+${jobDescription || "Not provided."}
+
+Candidate Resume:
+${resumeText || "Not provided."}
+
+Interview Transcript (turn-grouped, [mm:ss] Speaker: text):
+${transcriptText}
+
+Instructions:
+${activePrompt}
+`;
+
+      const { data, provider, model } = await generateJSON<{ exchanges?: unknown }>({
+        apiKey,
+        system: "You are an expert interview transcript analyst.",
+        prompt: promptPayload,
+        schema: STRUCTURE_SCHEMA,
+      });
+
+      // The schema is a request, not a guarantee (server.ts:546-558's
+      // precedent, generalised here): drop any exchange missing a
+      // non-empty questionText or whose subAsks is not a non-empty array,
+      // drop any sub-ask missing non-empty text, coerce source to
+      // "implied_by_jd" only when it is exactly that literal string and to
+      // "asked" otherwise, then renumber exchangeIndex densely from 0 over
+      // the surviving exchanges so the Assess call's correlation domain is
+      // exactly 0..n-1.
+      const rawExchanges = data?.exchanges;
+      const survivors = (Array.isArray(rawExchanges) ? rawExchanges : [])
+        .filter(
+          (e: any) =>
+            e &&
+            typeof e.questionText === "string" &&
+            e.questionText.trim() &&
+            typeof e.answerText === "string" &&
+            Array.isArray(e.subAsks) &&
+            e.subAsks.length > 0
+        )
+        .map((e: any) => {
+          const subAsks = (e.subAsks as any[])
+            .filter((s) => s && typeof s.text === "string" && s.text.trim())
+            .map((s) => ({
+              text: s.text,
+              source: s.source === "implied_by_jd" ? "implied_by_jd" : "asked",
+            }));
+          return {
+            questionText: e.questionText,
+            questionIntent: typeof e.questionIntent === "string" ? e.questionIntent : "",
+            answerText: e.answerText,
+            subAsks,
+          };
+        })
+        .filter((e) => e.subAsks.length > 0);
+
+      const exchanges = survivors.map((e, i) => ({ ...e, exchangeIndex: i }));
+
+      if (exchanges.length === 0) {
+        return res.status(502).json({
+          error: "The model found no substantive questions in this transcript. Try again.",
+        });
+      }
+
+      res.json({ exchanges, modelUsed: model, provider });
+    } catch (error: any) {
+      console.error("Error in /api/interview/transcript/structure:", error);
+      fail(res, error, "An unexpected error occurred while structuring the transcript.");
+    }
+  });
+
+  // 2b. Live Interview — Assess Stage (LIVE-16, D-62's second call)
+  //
+  // Judges Structure's own exchanges. Receives only the exchanges, not the
+  // raw transcript again (RESEARCH.md open question 2 — token-cheaper, and
+  // Structure already extracted the answer text). No evidence quote is
+  // trusted at face value: the client independently verifies every
+  // evidenceQuote against the stored transcript (D-66) and downgrades a
+  // verdict it cannot verify.
+  app.post("/api/interview/live-feedback", async (req, res) => {
+    try {
+      const { exchanges, jobDescription, resumeText, appliedPosition, customPrompt, apiKey } = req.body;
+
+      if (!Array.isArray(exchanges) || exchanges.length === 0) {
+        return res.status(400).json({ error: "At least one exchange is required." });
+      }
+
+      const activePrompt = (customPrompt && customPrompt.trim()) || DEFAULT_LIVE_FEEDBACK_PROMPT;
+
+      const promptPayload = `
+Applied Position:
+${appliedPosition || "Not specified — infer the target role from the job description."}
+
+Job Description:
+${jobDescription || "Not provided."}
+
+Candidate Resume:
+${resumeText || "Not provided."}
+
+Extracted Exchanges (JSON):
+${JSON.stringify(exchanges, null, 2)}
+
+Instructions:
+${activePrompt}
+`;
+
+      const { data, provider, model } = await generateJSON<{ exchanges?: unknown }>({
+        apiKey,
+        system: "You are an expert interview assessor judging content only, never delivery.",
+        prompt: promptPayload,
+        schema: LIVE_FEEDBACK_SCHEMA,
+      });
+
+      const validCoverage = new Set(["ADDRESSED", "PARTIAL", "NOT_ADDRESSED", "DEFLECTED"]);
+      const rawExchanges = data?.exchanges;
+      const judged = (Array.isArray(rawExchanges) ? rawExchanges : [])
+        .filter((e: any) => e && Number.isInteger(e.exchangeIndex) && Array.isArray(e.subAsks))
+        .map((e: any) => ({
+          exchangeIndex: e.exchangeIndex,
+          subAsks: (e.subAsks as any[])
+            .filter((s) => s && typeof s.text === "string" && s.text.trim())
+            .map((s) => ({
+              text: s.text,
+              coverage: validCoverage.has(s.coverage) ? s.coverage : "NOT_ADDRESSED",
+              evidenceQuote: typeof s.evidenceQuote === "string" ? s.evidenceQuote : "",
+              assessment: typeof s.assessment === "string" ? s.assessment : "",
+            })),
+        }));
+
+      // Pitfall 1: array position alone is not a safe correlation key.
+      // Every integer in 0..exchanges.length-1 must appear exactly once.
+      const indices = judged.map((e) => e.exchangeIndex).sort((a, b) => a - b);
+      const expected = Array.from({ length: exchanges.length }, (_, i) => i);
+      const correlationHolds =
+        indices.length === expected.length && indices.every((v, i) => v === expected[i]);
+
+      if (!correlationHolds) {
+        return res.status(502).json({
+          error: "The judgement could not be matched back to the questions. Try judging again.",
+        });
+      }
+
+      res.json({ exchanges: judged, modelUsed: model, provider });
+    } catch (error: any) {
+      console.error("Error in /api/interview/live-feedback:", error);
+      fail(res, error, "An unexpected error occurred while judging the interview.");
     }
   });
 
