@@ -5,7 +5,7 @@ import { ConsentGate } from "../components/ConsentGate";
 import { RoleToggle } from "../components/RoleToggle";
 import { RecordingControls } from "../components/RecordingControls";
 import { CrashRecoveryPrompt } from "../components/CrashRecoveryPrompt";
-import { RecordingDownloads } from "../components/RecordingDownloads";
+import { RecordingDownloads, formatStartedAt } from "../components/RecordingDownloads";
 import { MicSetup } from "../components/MicSetup";
 import type { ModelStatus } from "../components/MicSetup";
 import { TranscriptView } from "../components/TranscriptView";
@@ -14,6 +14,7 @@ import { findQuoteInSegments, fingerprintSegments } from "../lib/quoteMatcher";
 import { startTranscriptionSession, warmUpWhisper } from "../lib/transcriptionSession";
 import type { TranscriptionSessionHandle, TranscriptionStatus } from "../lib/transcriptionSession";
 import { readSegments, applyResolvedSpeakers, countSegments } from "../lib/transcriptStore";
+import { putFeedbackDocument, readFeedbackDocument, listAnalysedSessionIds } from "../lib/documentStore";
 import { effectiveSpeaker, groupIntoTurns, moveTurnBoundary } from "../lib/transcriptTurns";
 import { formatTranscriptText } from "../lib/transcriptText";
 import {
@@ -253,6 +254,18 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
   const [feedbackStage, setFeedbackStage] = useState<FeedbackStage>("idle");
   const [feedbackError, setFeedbackError] = useState("");
 
+  // D-71/D-72: which take's transcript and feedback surface are currently on
+  // screen — the just-stopped take (set in handleStop's post-stop path) or a
+  // past take loaded via handleAnalyseTake. `analysedSessionIds` is every
+  // take with a stored document, refetched alongside `transcriptCounts`
+  // (never on its own) so the takes list can mark them without reading every
+  // document. `documentStale` is D-51's open risk: true once a speaker
+  // correction has landed after `feedbackDocument` was generated, comparing
+  // fingerprints rather than trusting a flag that could drift.
+  const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null);
+  const [analysedSessionIds, setAnalysedSessionIds] = useState<string[]>([]);
+  const [documentStale, setDocumentStale] = useState(false);
+
   // D-70: this chain gates on browser capability alone — recording,
   // consent, mic setup and transcription stay keyless and input-free.
   // Phase 6 added the feedback step, which is the one part of Tool 4 that
@@ -332,6 +345,20 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
     setTranscriptCounts(Object.fromEntries(entries));
   };
 
+  /**
+   * D-72's companion read: every call site that refetches
+   * `transcriptCounts` also needs to know which takes already have a stored
+   * feedback document, so the takes list can mark them without reading every
+   * document itself. Calling both together — never `refreshTranscriptCounts`
+   * alone — keeps `analysedSessionIds` from silently drifting out of sync
+   * with the take list on any one of this function's several call sites.
+   */
+  const refreshTranscriptCountsAndAnalysed = async (takes: RecordingSession[]) => {
+    await refreshTranscriptCounts(takes);
+    const ids = await listAnalysedSessionIds();
+    setAnalysedSessionIds(ids);
+  };
+
   // Read by the wake-lock re-acquire predicate, which needs the latest
   // status inside a closure that isn't re-created on every status change.
   const statusRef = useRef<CaptureStatus>(status);
@@ -395,7 +422,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       const takes = await listStoppedSessions();
       if (cancelled) return;
       setStoppedTakes(takes);
-      await refreshTranscriptCounts(takes);
+      await refreshTranscriptCountsAndAnalysed(takes);
       if (cancelled) return;
       setRecoveryScanning(false);
     })();
@@ -424,6 +451,17 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
     setTranscriptSegments([]);
     setTranscriptionStatus(null);
     setTranscriptSkippedCount(0);
+    // D-72: every stored feedback document is gone along with everything
+    // else "Clear stored data" removes — the takes list must stop marking
+    // any take as analysed or as on screen, and the feedback surface must
+    // stop pointing at a take whose document no longer exists.
+    setAnalysedSessionIds([]);
+    setLoadedSessionId(null);
+    setFeedbackExchanges([]);
+    setFeedbackDocument(null);
+    setFeedbackStage("idle");
+    setFeedbackError("");
+    setDocumentStale(false);
     // The completion line (session/elapsedMs) describes a specific
     // stopped take, kept only for RecordingControls' stopped-state text
     // (see findTake's doc comment) — it must not go on describing a take
@@ -632,7 +670,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
     }
     const takes = await listStoppedSessions();
     setStoppedTakes(takes);
-    await refreshTranscriptCounts(takes);
+    await refreshTranscriptCountsAndAnalysed(takes);
   };
 
   /**
@@ -680,6 +718,13 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       setFeedbackDocument(null);
       setFeedbackStage("idle");
       setFeedbackError("");
+      // D-71/D-72: the take that was "on screen" belongs to the take that
+      // just ended, not to the one about to begin — clearing it here means
+      // the takes list stops marking it once a new take is under way, and a
+      // stale staleness flag from the previous take's corrections can never
+      // leak into the next one's.
+      setLoadedSessionId(null);
+      setDocumentStale(false);
     }
     setHasConsented(true);
     // D-55: this take's keep-audio answer, settled before a byte exists.
@@ -1065,6 +1110,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       setWakeLockUnavailable(false);
       setElapsedMs(finalDuration);
       setStatus("stopped");
+      // D-71: the just-stopped take is simply the one already loaded — the
+      // same marker (and the same `handleAnalyseTake` code path, on a later
+      // visit) covers both it and any past take.
+      setLoadedSessionId(session.sessionId);
 
       await markSessionStopped(db, session.sessionId, finalDuration);
       setSession({ ...session, status: "stopped", durationMs: finalDuration });
@@ -1085,7 +1134,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       await updateSessionSize(db, session.sessionId, result.summary.totalBytes);
       const takes = await listStoppedSessions();
       setStoppedTakes(takes);
-      await refreshTranscriptCounts(takes);
+      await refreshTranscriptCountsAndAnalysed(takes);
 
       // D-39: deliberately not awaited — draining the transcriber's last
       // windows must never hold the UI in a stopping state. Reads the
@@ -1102,7 +1151,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
           setTranscriptSkippedCount(skippedCount);
           const refreshedTakes = await listStoppedSessions();
           setStoppedTakes(refreshedTakes);
-          await refreshTranscriptCounts(refreshedTakes);
+          await refreshTranscriptCountsAndAnalysed(refreshedTakes);
 
           // D-52/D-53: the retention gate, run exactly once per take, here
           // and nowhere else. `finish()` above has already written this
@@ -1254,10 +1303,23 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       await deleteSession(sessionId);
       const takes = await listStoppedSessions();
       setStoppedTakes(takes);
-      await refreshTranscriptCounts(takes);
+      await refreshTranscriptCountsAndAnalysed(takes);
       if (session?.sessionId === sessionId) {
         setSession(null);
         setElapsedMs(0);
+      }
+      // D-71/D-72: a deleted take can never stay "on screen" — its
+      // transcript and any stored document are gone from storage, so the
+      // marker and feedback surface that pointed at it must clear too.
+      if (loadedSessionId === sessionId) {
+        setLoadedSessionId(null);
+        setTranscriptSegments([]);
+        setTranscriptSkippedCount(0);
+        setFeedbackExchanges([]);
+        setFeedbackDocument(null);
+        setFeedbackStage("idle");
+        setFeedbackError("");
+        setDocumentStale(false);
       }
     } finally {
       setDeletingIds((prev) => ({ ...prev, [sessionId]: false }));
@@ -1306,10 +1368,75 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         await applyResolvedSpeakers(session.sessionId, updates);
       }
       setTranscriptSegments(recomputed);
+      // D-51 / Claude's Discretion: a correction landing after a document
+      // was generated means that document's judgement now rests on an
+      // attribution that has since changed. Compare fingerprints rather than
+      // trusting a flag — the fingerprint is exactly what `putFeedbackDocument`
+      // stored at generation time, so this is the same check a reload would
+      // make, done immediately instead of waiting for one.
+      if (feedbackDocument) {
+        const newFingerprint = fingerprintSegments(recomputed);
+        setDocumentStale(newFingerprint !== feedbackDocument.transcriptFingerprint);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the speaker correction.");
     } finally {
       setCorrectingSeqs((prev) => ({ ...prev, [seq]: false }));
+    }
+  };
+
+  /**
+   * D-71: loads a past take (or re-loads the just-stopped one) into the
+   * transcript view and feedback surface, via `readSegments` — the same
+   * function the post-stop path already calls (~line 1113), so a past take
+   * and the just-stopped take are the same code path. Guarded against a
+   * concurrent second press on the same take in the existing `downloading`-
+   * flag style, keyed `${sessionId}:analyse`. Also refuses while `hasConsented`
+   * is true — the operator is either mid-setup or mid-recording a *different*
+   * take at that point, and `session`/`status` belong to that take, not to
+   * whichever row was clicked; overwriting them here would misattribute the
+   * next tag press or corrupt the take actually in progress. A take with
+   * zero segments is never reachable here — `RecordingDownloads` offers no
+   * control for it (`classifyTake` returns `"noTranscript"`) — so this
+   * asserts that defensively and returns early rather than rendering an
+   * empty surface.
+   */
+  const handleAnalyseTake = async (sessionId: string) => {
+    const key = `${sessionId}:analyse`;
+    if (downloading[key] || hasConsented) return;
+    const take = findTake(sessionId);
+    if (!take) return;
+    setError("");
+    setDownloading((prev) => ({ ...prev, [key]: true }));
+    try {
+      const { segments, skippedCount } = await readSegments(sessionId);
+      if (segments.length === 0) return;
+
+      setSession(take);
+      setElapsedMs(take.durationMs);
+      setStatus("stopped");
+      setTranscriptSegments(segments);
+      setTranscriptSkippedCount(skippedCount);
+      // A past take's live transcription status describes a different take
+      // entirely (or nothing, for a take recorded in a previous page
+      // session) — carrying it forward would show a stale "stalled"/"loading"
+      // line above a transcript that finished transcribing long ago.
+      setTranscriptionStatus(null);
+      setLoadedSessionId(sessionId);
+      setFeedbackExchanges([]);
+      setFeedbackError("");
+      setDocumentStale(false);
+
+      const stored = await readFeedbackDocument(sessionId);
+      if (stored) {
+        setFeedbackDocument(stored);
+        setFeedbackStage("done");
+      } else {
+        setFeedbackDocument(null);
+        setFeedbackStage("idle");
+      }
+    } finally {
+      setDownloading((prev) => ({ ...prev, [key]: false }));
     }
   };
 
@@ -1419,6 +1546,24 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
 
       setFeedbackDocument(assembled);
       setFeedbackStage("done");
+      // D-72: this fingerprint is fresh off the transcript that was just
+      // judged, so whatever staleness a prior correction may have set is
+      // resolved the instant a new document replaces the old one.
+      setDocumentStale(false);
+
+      // D-72: generation cost the visitor two calls on their own key — a
+      // reload must not charge them again. A write failure must never
+      // discard the document already on screen; it surfaces as a visible
+      // warning instead, so the visitor knows a reload will lose it.
+      try {
+        await putFeedbackDocument(assembled);
+        const ids = await listAnalysedSessionIds();
+        setAnalysedSessionIds(ids);
+      } catch {
+        setError(
+          "The feedback document is on screen but could not be saved — reloading this page will lose it."
+        );
+      }
     } catch (err: any) {
       setFeedbackError(err?.message || "Could not reach the model.");
       setFeedbackStage("idle");
@@ -1492,6 +1637,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
     setFeedbackDocument(null);
     setFeedbackStage("idle");
     setFeedbackError("");
+    // D-51: starting over abandons the stored document's judgement along
+    // with the in-progress one — there is nothing left for a stale flag to
+    // describe.
+    setDocumentStale(false);
   };
 
   const warnings: RecordingWarning[] = [];
@@ -1601,12 +1750,31 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
               connectButtonRef={connectButtonRef}
               warnings={warnings}
             />
+          </>
+        )}
 
-            {/* D-56: the transcript builds beneath the banner
-                `RecordingControls` mounts above, in normal reading type,
-                never competing with the banner's across-the-table
-                legibility. Turn grouping only, never segment rendering —
-                that stays inside TranscriptView itself. */}
+        {/* D-56/D-71: the transcript is a sibling of the consent branch
+            above, not nested inside it — `hasConsented` resets to `false`
+            the instant Stop finishes (`teardownCapture`, same reasoning
+            `LiveInterviewFeedback` below was already pulled out for in plan
+            06-01) and is never `true` at all for a past take loaded via
+            `handleAnalyseTake`. Nesting it inside the consent branch would
+            hide the transcript — and with it every LIVE-13 correction and
+            every D-71 Analyse target — the moment either of those states is
+            reached. Renders whenever a take's segments are loaded: live,
+            just-stopped, or a past take reopened from the list below. The
+            header line names which take is on screen with the same
+            `formatStartedAt` label `RecordingDownloads` uses for its own
+            rows, so a loaded past take is never ambiguous with the live one
+            (D-71). Turn grouping only, never segment rendering — that stays
+            inside TranscriptView itself. */}
+        {transcriptSegments.length > 0 && (
+          <>
+            {session && (
+              <p className="text-xs text-[#6b7685]">
+                On screen: <span className="text-[#9aa3b0] font-medium">{formatStartedAt(session.startedAt)}</span>
+              </p>
+            )}
             <TranscriptView
               turns={groupIntoTurns(transcriptSegments)}
               status={transcriptionStatus}
@@ -1636,6 +1804,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
             stage={feedbackStage}
             error={feedbackError}
             hasExchanges={feedbackExchanges.length > 0}
+            isStale={documentStale}
             onGenerate={handleGenerateFeedback}
             onRetryJudging={handleRetryJudging}
             onStartOver={handleStartOver}
@@ -1651,6 +1820,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
           downloading={downloading}
           deletingIds={deletingIds}
           hasActiveTake={status === "connecting" || status === "armed" || status === "recording" || status === "paused"}
+          onAnalyseTake={handleAnalyseTake}
+          loadedSessionId={loadedSessionId}
+          analysedSessionIds={analysedSessionIds}
           onDownloadAudio={handleDownloadAudio}
           onDownloadSidecar={handleDownloadSidecar}
           onDownloadTranscript={handleDownloadTranscript}
