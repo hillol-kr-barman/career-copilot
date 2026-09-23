@@ -1,13 +1,17 @@
 import React, { useState } from "react";
-import { Download, RefreshCw, Trash2 } from "lucide-react";
+import { Download, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import type { RecordingSession } from "../types";
 import { extensionForMimeType } from "../lib/recorder";
 import { formatElapsed, formatRelativeTime } from "../lib/formatTime";
 
 const formatSizeMb = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1);
 
-/** A local date and time, e.g. "Sep 8, 2026, 4:12 PM" — the take's label. */
-const formatStartedAt = (startedAt: number): string =>
+/**
+ * A local date and time, e.g. "Sep 8, 2026, 4:12 PM" — the take's label.
+ * Exported so `LiveInterview.tsx` can name which take is on screen (D-71)
+ * with the exact same label this file's own rows use.
+ */
+export const formatStartedAt = (startedAt: number): string =>
   new Date(startedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 /**
@@ -56,12 +60,18 @@ export interface RecordingDownloadsProps {
   takes: RecordingSession[];
   /** One segment count per take, keyed by sessionId — distinguishes "no transcript" from "a transcript exists". */
   transcriptCounts: Record<string, number>;
-  /** In-flight flag keyed by `${sessionId}:audio`, `${sessionId}:sidecar`, or `${sessionId}:transcript` — none of a take's three downloads ever blocks another, and none blocks another take's downloads. */
+  /** In-flight flag keyed by `${sessionId}:audio`, `${sessionId}:sidecar`, `${sessionId}:transcript`, or `${sessionId}:analyse` — none of a take's four actions ever blocks another, and none blocks another take's actions. */
   downloading: Record<string, boolean>;
   /** In-flight delete flag keyed by sessionId — guards a second concurrent press on the same take. */
   deletingIds: Record<string, boolean>;
   /** True while a take is being recorded — suppresses the empty-state copy so "No recordings yet" doesn't show while one is already under way. */
   hasActiveTake: boolean;
+  /** D-71: every take with at least one stored transcript segment can be analysed — the Analyse control loads that take's segments into `TranscriptView` and points the feedback surface at it. */
+  onAnalyseTake: (sessionId: string) => void;
+  /** D-71: the take, if any, currently loaded into `TranscriptView`/the feedback surface — marked in its row with a text marker, never colour alone. */
+  loadedSessionId: string | null;
+  /** D-72: every take with a stored feedback document — its row's Analyse control is relabelled and carries a note that opening it costs nothing further. */
+  analysedSessionIds: string[];
   onDownloadAudio: (sessionId: string, filename: string) => void;
   onDownloadSidecar: (sessionId: string, filename: string) => void;
   onDownloadTranscript: (sessionId: string, filename: string) => void;
@@ -76,6 +86,14 @@ export interface RecordingDownloadsProps {
  * stored here is ever deleted except by that take's own delete control, the
  * D-52/D-53 retention gate acting on audio alone, or the app-wide "Clear
  * stored data".
+ *
+ * D-71/D-72: also the entry point for analysing any past take, not only the
+ * one just recorded. Every take whose `TakeDownloadState` is not
+ * `"noTranscript"` gets an Analyse control — relabelled "Analyse again" and
+ * annotated once a feedback document is already stored for it (D-72, no
+ * further call needed to open it) — and the take currently loaded into
+ * `TranscriptView`/the feedback surface is marked with a text badge, never
+ * colour alone, matching `TranscriptView`'s own "Corrected" marker.
  */
 export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
   takes,
@@ -83,6 +101,9 @@ export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
   downloading,
   deletingIds,
   hasActiveTake,
+  onAnalyseTake,
+  loadedSessionId,
+  analysedSessionIds,
   onDownloadAudio,
   onDownloadSidecar,
   onDownloadTranscript,
@@ -122,7 +143,11 @@ export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
             isDownloadingAudio={Boolean(downloading[`${take.sessionId}:audio`])}
             isDownloadingSidecar={Boolean(downloading[`${take.sessionId}:sidecar`])}
             isDownloadingTranscript={Boolean(downloading[`${take.sessionId}:transcript`])}
+            isAnalysing={Boolean(downloading[`${take.sessionId}:analyse`])}
             isDeleting={Boolean(deletingIds[take.sessionId])}
+            isLoaded={take.sessionId === loadedSessionId}
+            isAnalysed={analysedSessionIds.includes(take.sessionId)}
+            onAnalyseTake={onAnalyseTake}
             onDownloadAudio={onDownloadAudio}
             onDownloadSidecar={onDownloadSidecar}
             onDownloadTranscript={onDownloadTranscript}
@@ -146,7 +171,13 @@ interface TakeRowProps {
   isDownloadingAudio: boolean;
   isDownloadingSidecar: boolean;
   isDownloadingTranscript: boolean;
+  isAnalysing: boolean;
   isDeleting: boolean;
+  /** D-71: true when this take's id is `loadedSessionId` — the one currently on screen. */
+  isLoaded: boolean;
+  /** D-72: true when this take already has a stored feedback document. */
+  isAnalysed: boolean;
+  onAnalyseTake: (sessionId: string) => void;
   onDownloadAudio: (sessionId: string, filename: string) => void;
   onDownloadSidecar: (sessionId: string, filename: string) => void;
   onDownloadTranscript: (sessionId: string, filename: string) => void;
@@ -154,13 +185,14 @@ interface TakeRowProps {
 }
 
 /**
- * One stopped take's row: its start time and relative age, its duration and
- * size, a state-specific explanatory line when the take isn't in the plain
- * "audio kept, transcript present" state, and its controls — audio, tag
- * track, transcript, and delete, each rendered as a real download or as a
- * same-slot, same-size explanation of why it isn't offered. Every row gets
- * the same treatment regardless of position (D-31) — no "newest" badge, no
- * special styling for the top row.
+ * One stopped take's row: its start time and relative age (plus an "On
+ * screen" text marker when this take is the one currently loaded, D-71), its
+ * duration and size, a state-specific explanatory line when the take isn't
+ * in the plain "audio kept, transcript present" state, and its controls —
+ * audio, tag track, transcript, Analyse, and delete, each rendered as a real
+ * control or as a same-slot, same-size explanation of why it isn't offered.
+ * Every row gets the same treatment regardless of position (D-31) — no
+ * "newest" badge, no special styling for the top row.
  *
  * The delete control uses an inline two-step confirm — a first press swaps
  * the row's controls for a confirm-and-cancel pair naming the take it will
@@ -175,7 +207,11 @@ const TakeRow: React.FC<TakeRowProps> = ({
   isDownloadingAudio,
   isDownloadingSidecar,
   isDownloadingTranscript,
+  isAnalysing,
   isDeleting,
+  isLoaded,
+  isAnalysed,
+  onAnalyseTake,
   onDownloadAudio,
   onDownloadSidecar,
   onDownloadTranscript,
@@ -192,7 +228,17 @@ const TakeRow: React.FC<TakeRowProps> = ({
   return (
     <div className="flex flex-col gap-3 rounded-[8px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <span className="text-sm font-semibold text-[#eef0f3]">{takeLabel}</span>
+        <span className="flex items-baseline gap-2">
+          <span className="text-sm font-semibold text-[#eef0f3]">{takeLabel}</span>
+          {isLoaded && (
+            <span
+              className="text-[10px] font-semibold uppercase tracking-wide text-[#00d4dc]"
+              title="This take's transcript and feedback surface are currently on screen"
+            >
+              On screen
+            </span>
+          )}
+        </span>
         <span className="text-xs text-[#6b7685]">
           {formatElapsed(take.durationMs)} · ~{formatSizeMb(take.sizeBytes ?? 0)} MB
         </span>
@@ -214,6 +260,12 @@ const TakeRow: React.FC<TakeRowProps> = ({
         <p className="text-xs text-[#9aa3b0] leading-relaxed">
           This take was recorded before transcription existed in this tool. Its audio and tag
           track are intact; it cannot be transcribed now.
+        </p>
+      )}
+      {isAnalysed && (
+        <p className="text-xs text-[#9aa3b0] leading-relaxed">
+          A feedback document is already stored for this take — opening it will not cost another
+          call.
         </p>
       )}
 
@@ -241,7 +293,7 @@ const TakeRow: React.FC<TakeRowProps> = ({
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
           {state === "audioDeleted" ? (
             <UnavailableSlot label="Audio" reason="Deleted after transcription" />
           ) : (
@@ -263,6 +315,15 @@ const TakeRow: React.FC<TakeRowProps> = ({
               label="Transcript"
               isDownloading={isDownloadingTranscript}
               onClick={() => onDownloadTranscript(take.sessionId, transcriptFilename)}
+            />
+          )}
+          {state === "noTranscript" ? (
+            <UnavailableSlot label="Analyse" reason="No transcript to analyse — cannot be transcribed now" />
+          ) : (
+            <AnalyseButton
+              label={isAnalysed ? "Analyse again" : "Analyse"}
+              isAnalysing={isAnalysing}
+              onClick={() => onAnalyseTake(take.sessionId)}
             />
           )}
           <button
@@ -298,6 +359,37 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ label, isDownloading, o
         <Download className="w-4 h-4 shrink-0" />
       )}
       <span>{isDownloading ? "Preparing…" : label}</span>
+    </button>
+  );
+};
+
+interface AnalyseButtonProps {
+  label: string;
+  isAnalysing: boolean;
+  onClick: () => void;
+}
+
+/**
+ * D-71's per-take entry point into the feedback surface — loads this take's
+ * stored segments into `TranscriptView` and points the feedback surface at
+ * it. Visually paired with `DownloadButton` (same control language, same
+ * disabled-while-in-flight behaviour) but its own icon and busy copy, since
+ * "Preparing…" describes a download, not the read this control triggers.
+ */
+const AnalyseButton: React.FC<AnalyseButtonProps> = ({ label, isAnalysing, onClick }) => {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={isAnalysing}
+      className="flex items-center justify-center gap-2 px-4 py-3 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-xs font-semibold uppercase tracking-widest"
+    >
+      {isAnalysing ? (
+        <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+      ) : (
+        <Sparkles className="w-4 h-4 shrink-0" />
+      )}
+      <span>{isAnalysing ? "Loading…" : label}</span>
     </button>
   );
 };

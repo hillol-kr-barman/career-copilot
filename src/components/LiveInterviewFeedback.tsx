@@ -14,6 +14,15 @@ export interface LiveInterviewFeedbackProps {
   /** True once Structure has produced exchanges — even before Assess has run
    * or after Assess has failed (D-63: a failed Assess keeps them on screen). */
   hasExchanges: boolean;
+  /**
+   * D-51 / Claude's Discretion: true once a LIVE-13 speaker correction has
+   * landed after `document` was generated, so the stored judgement now rests
+   * on an attribution that has since changed. Never regenerates on its own —
+   * it only offers the same `onGenerate` action, relabelled, so a
+   * regeneration is always something the visitor asked for (it costs them a
+   * second pair of paid calls).
+   */
+  isStale: boolean;
   onGenerate: () => void;
   onRetryJudging: () => void;
   onStartOver: () => void;
@@ -58,6 +67,7 @@ export const LiveInterviewFeedback: React.FC<LiveInterviewFeedbackProps> = ({
   stage,
   error,
   hasExchanges,
+  isStale,
   onGenerate,
   onRetryJudging,
   onStartOver,
@@ -139,6 +149,28 @@ export const LiveInterviewFeedback: React.FC<LiveInterviewFeedbackProps> = ({
                   </span>
                 </>
               )}
+            </div>
+          )}
+
+          {document && isStale && (
+            <div className="p-3 bg-amber-500/10 text-amber-500 border border-amber-500/15 rounded-[6px] text-xs flex flex-col gap-2 font-medium">
+              <span className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>
+                  A speaker label was corrected after this document was generated — its judgement
+                  may no longer match the transcript above.
+                </span>
+              </span>
+              <span>
+                <button
+                  onClick={onGenerate}
+                  disabled={isBusy}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95 disabled:opacity-50"
+                >
+                  {isBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  Regenerate feedback
+                </button>
+              </span>
             </div>
           )}
 
