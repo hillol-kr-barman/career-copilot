@@ -61,6 +61,14 @@ export const exportQAtoPDF = async (pairs: QAPair[], meta: ExportMeta) => {
       style?: "normal" | "bold" | "italic";
       gapAfter: number;
       color?: [number, number, number];
+      /**
+       * Offsets both the text origin and the wrap width for a nested row
+       * (used by `exportFeedback.ts`'s sub-ask rows) — never achieved by
+       * prefixing spaces into the text, which would silently break
+       * `splitTextToSize`'s wrap-width calculation. Absent, behaviour is
+       * byte-identical to before this option existed.
+       */
+      indent?: number;
     }
   ) => {
     doc.setFontSize(opts.size);
@@ -68,12 +76,12 @@ export const exportQAtoPDF = async (pairs: QAPair[], meta: ExportMeta) => {
     const [r, g, b] = opts.color ?? [17, 17, 17];
     doc.setTextColor(r, g, b);
 
-    const lines = doc.splitTextToSize(text, maxWidth) as string[];
+    const lines = doc.splitTextToSize(text, maxWidth - (opts.indent ?? 0)) as string[];
     const lineHeight = opts.size * 1.45;
 
     for (const line of lines) {
       ensureRoom(lineHeight);
-      doc.text(line, margin, y);
+      doc.text(line, margin + (opts.indent ?? 0), y);
       y += lineHeight;
     }
     y += opts.gapAfter;
