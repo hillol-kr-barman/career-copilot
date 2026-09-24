@@ -2,6 +2,7 @@ import React from "react";
 import { AlertTriangle, Lock, RefreshCw, Sparkles } from "lucide-react";
 import type { FeedbackDocument, FeedbackStage, SharedContext, TranscriptSegment } from "../types";
 import { RenderMarkdown } from "../lib/renderMarkdown";
+import { ExchangeDetail } from "./ExchangeDetail";
 import {
   deriveSilentGaps,
   deriveMissedFollowUps,
@@ -32,6 +33,10 @@ export interface LiveInterviewFeedbackProps {
   onGenerate: () => void;
   onRetryJudging: () => void;
   onStartOver: () => void;
+  /** D-60: reports a clicked evidence quote's resolved segment upward, straight through to every `ExchangeDetail`. The jump rule (which segment, when it clears) lives in `LiveInterview.tsx`, never here. */
+  onJumpToSegment: (seq: number) => void;
+  /** D-51: mirrors `canCorrect` — true only once the take is stopped and has a transcript. Passed straight through to every `ExchangeDetail`. */
+  canJump: boolean;
 }
 
 const COVERAGE_LABEL: Record<string, string> = {
@@ -87,6 +92,8 @@ export const LiveInterviewFeedback: React.FC<LiveInterviewFeedbackProps> = ({
   onGenerate,
   onRetryJudging,
   onStartOver,
+  onJumpToSegment,
+  canJump,
 }) => {
   const missing: string[] = [];
   if (!apiKey.trim()) missing.push("your API key");
@@ -332,73 +339,24 @@ export const LiveInterviewFeedback: React.FC<LiveInterviewFeedbackProps> = ({
                     </div>
                   </section>
 
-                  {/* Section 6 (D-58, last): exchange-by-exchange detail. Plan 06-05
-                      replaces this section's body with `ExchangeDetail`; the heading,
-                      ordering position, and props boundary stay in place so that
-                      replacement is a body swap rather than a restructure. */}
+                  {/* Section 6 (D-58, last): exchange-by-exchange detail. Plan 06-05's
+                      body swap — the heading, ordering position, and props boundary are
+                      unchanged from 06-04; only the per-exchange body is now
+                      `ExchangeDetail` (D-59's collapsed card), one per exchange, in the
+                      order the document already carries them (no re-sort here — plan
+                      06-01 sorted at assembly time). */}
                   <section className="flex flex-col gap-3">
                     <h4 className="text-sm font-semibold text-[#eef0f3]">
                       Exchange-by-exchange detail
                     </h4>
-                    {document.exchanges
-                      .slice()
-                      .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0) || a.exchangeIndex - b.exchangeIndex)
-                      .map((exchange) => (
-                        <div
-                          key={exchange.exchangeIndex}
-                          className="bg-[#161a1e] border border-[rgba(255,255,255,0.07)] rounded-[6px] p-4 flex flex-col gap-3"
-                        >
-                          <p className="text-sm font-semibold text-[#eef0f3] leading-relaxed">
-                            {exchange.questionText}
-                          </p>
-                          {exchange.questionIntent && (
-                            <p className="text-[11px] text-[#6b7685] italic leading-relaxed">
-                              {exchange.questionIntent}
-                            </p>
-                          )}
-
-                          <ul className="flex flex-col gap-2.5">
-                            {exchange.subAsks.map((subAsk, i) => (
-                              <li
-                                key={i}
-                                className="flex flex-col gap-1 border-t border-[rgba(255,255,255,0.05)] pt-2.5 first:border-t-0 first:pt-0"
-                              >
-                                <span className="flex items-start gap-2 text-xs">
-                                  <span className="text-[#00d4dc] font-mono shrink-0">
-                                    {COVERAGE_GLYPH[subAsk.coverage] ?? "○"}
-                                  </span>
-                                  <span className="font-semibold text-[#eef0f3]">
-                                    {COVERAGE_LABEL[subAsk.coverage] ?? subAsk.coverage}
-                                  </span>
-                                  {subAsk.source === "implied_by_jd" && (
-                                    <span className="text-[9px] font-mono font-semibold uppercase tracking-wider text-[#6b7685] border border-[rgba(255,255,255,0.07)] rounded-[4px] px-1.5 py-0.5">
-                                      Implied by JD
-                                    </span>
-                                  )}
-                                </span>
-                                <span className="text-sm text-white/80 leading-relaxed pl-5">
-                                  {subAsk.text}
-                                </span>
-                                {subAsk.evidenceQuote && (
-                                  <span className="text-xs text-[#9aa3b0] italic leading-relaxed pl-5">
-                                    "{subAsk.evidenceQuote}"
-                                  </span>
-                                )}
-                                {subAsk.quoteUnverified && (
-                                  <span className="text-[11px] text-amber-500 pl-5">
-                                    No quotable evidence was found for this in the transcript.
-                                  </span>
-                                )}
-                                {subAsk.assessment && (
-                                  <div className="pl-5 text-xs text-[#9aa3b0] leading-relaxed">
-                                    <RenderMarkdown text={subAsk.assessment} />
-                                  </div>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
+                    {document.exchanges.map((exchange) => (
+                      <ExchangeDetail
+                        key={exchange.exchangeIndex}
+                        exchange={exchange}
+                        onJumpToSegment={onJumpToSegment}
+                        canJump={canJump}
+                      />
+                    ))}
                   </section>
                 </>
               )}

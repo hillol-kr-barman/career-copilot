@@ -266,6 +266,13 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
   const [analysedSessionIds, setAnalysedSessionIds] = useState<string[]>([]);
   const [documentStale, setDocumentStale] = useState(false);
 
+  // D-60: the segment an evidence-quote click points `TranscriptView` at.
+  // Owned here, not in `TranscriptView` — the same split `handleMoveBoundary`
+  // already follows for D-50 (the view reports and renders, the section
+  // decides). Cleared wherever `transcriptSegments` is reset, so a highlight
+  // can never point into a transcript it no longer describes (D-32).
+  const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
+
   // D-70: this chain gates on browser capability alone — recording,
   // consent, mic setup and transcription stay keyless and input-free.
   // Phase 6 added the feedback step, which is the one part of Tool 4 that
@@ -462,6 +469,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
     setFeedbackStage("idle");
     setFeedbackError("");
     setDocumentStale(false);
+    // D-60/D-32: a highlight pointing into a transcript that storage no
+    // longer holds is exactly the kind of quiet wrongness this project
+    // refuses.
+    setHighlightSeq(null);
     // The completion line (session/elapsedMs) describes a specific
     // stopped take, kept only for RecordingControls' stopped-state text
     // (see findTake's doc comment) — it must not go on describing a take
@@ -725,6 +736,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       // leak into the next one's.
       setLoadedSessionId(null);
       setDocumentStale(false);
+      // D-60: the highlight belonged to the take that just ended, not to
+      // the one about to begin.
+      setHighlightSeq(null);
     }
     setHasConsented(true);
     // D-55: this take's keep-audio answer, settled before a byte exists.
@@ -947,6 +961,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       setTranscriptionStatus(null);
       setTranscriptSkippedCount(0);
       setTranscriptionWarning(null);
+      // D-60: same reasoning — a highlight from the previous take has
+      // nothing left to point at.
+      setHighlightSeq(null);
 
       // D-39: this try/catch is deliberately outside the reach of the outer
       // catch below — that one deletes the freshly created session row on
@@ -1320,10 +1337,31 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         setFeedbackStage("idle");
         setFeedbackError("");
         setDocumentStale(false);
+        // D-60: the deleted take's transcript is gone — nothing left for a
+        // highlight to point at.
+        setHighlightSeq(null);
       }
     } finally {
       setDeletingIds((prev) => ({ ...prev, [sessionId]: false }));
     }
+  };
+
+  /**
+   * D-60: scrolls `TranscriptView` to the segment a clicked evidence quote
+   * resolved to, and highlights it. The jump rule lives here, never inside
+   * `TranscriptView`, for the same reason `handleMoveBoundary` below keeps
+   * D-50's boundary-move rule out of that component: the view reports and
+   * renders, the section decides.
+   *
+   * Clears `highlightSeq` and re-sets it on the next tick, rather than
+   * setting it directly, so a repeat click on the SAME quote still
+   * re-triggers the scroll — `TranscriptView`'s highlight effect is keyed
+   * on this value, and assigning it the number it already holds would
+   * otherwise be a no-op.
+   */
+  const handleJumpToSegment = (seq: number) => {
+    setHighlightSeq(null);
+    window.setTimeout(() => setHighlightSeq(seq), 0);
   };
 
   /**
@@ -1426,6 +1464,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       setFeedbackExchanges([]);
       setFeedbackError("");
       setDocumentStale(false);
+      // D-60/D-32: a highlight pointing into a different take's transcript
+      // is exactly the kind of quiet wrongness this project refuses — clear
+      // it before this take's own segments even land.
+      setHighlightSeq(null);
 
       const stored = await readFeedbackDocument(sessionId);
       if (stored) {
@@ -1783,6 +1825,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
               canCorrect={status === "stopped" && transcriptSegments.length > 0}
               onMoveBoundary={handleMoveBoundary}
               realtimeFactor={modelStatus.realtimeFactor}
+              highlightSeq={highlightSeq}
             />
           </>
         )}
@@ -1808,6 +1851,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
             onGenerate={handleGenerateFeedback}
             onRetryJudging={handleRetryJudging}
             onStartOver={handleStartOver}
+            onJumpToSegment={handleJumpToSegment}
+            canJump={status === "stopped" && transcriptSegments.length > 0}
           />
         )}
 
