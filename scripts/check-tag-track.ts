@@ -50,6 +50,7 @@ import {
 } from "../src/lib/windowCutting";
 import { effectiveSpeaker, groupIntoTurns, moveTurnBoundary } from "../src/lib/transcriptTurns";
 import { formatTranscriptText } from "../src/lib/transcriptText";
+import { formatElapsed } from "../src/lib/formatTime";
 import { normalizeForMatch, findQuoteInSegments, fingerprintSegments } from "../src/lib/quoteMatcher";
 import {
   screenDeliveryProse,
@@ -65,6 +66,8 @@ import {
   deriveScoreRow,
   filterEvidencedResumeFindings,
 } from "../src/lib/feedbackRollups";
+import { feedbackToPlainText } from "../src/lib/exportFeedback";
+import type { FeedbackExportMeta } from "../src/lib/exportFeedback";
 import type {
   TagPress,
   RecordingSession,
@@ -2151,6 +2154,188 @@ const feedbackFixtureDoc: FeedbackDocument = {
     rollupsCompetency,
     scoringCompetency,
     "the Tool 4 derivation's competencyRating expression has drifted from the ledger's own formula (InterviewScoringTable.tsx) — a Tool-4-sourced row will silently disagree with a manually-edited one once Phase 7 wires the ledger"
+  );
+}
+
+// Phase 6 Task 6-06-2 (LIVE-20): src/lib/exportFeedback.ts's feedbackToPlainText.
+// Pure and synchronous, so it is asserted directly under Node with the same
+// feedbackFixtureDoc/makeExchange/makeSubAsk fixtures the feedbackRollups
+// block above declares at module scope.
+
+const feedbackExportMetaFixture: FeedbackExportMeta = {
+  appliedPosition: "Senior Backend Engineer",
+  startedAt: 1_700_000_000_000,
+  generatedAt: 1_700_000_060_000,
+};
+
+// 1. Section order (LIVE-20, D-58): the six section headings appear at
+// strictly increasing indices, silent gaps first — computed, not a
+// hardcoded whole-file string comparison.
+{
+  const text = feedbackToPlainText(feedbackFixtureDoc, feedbackExportMetaFixture);
+  const headings = [
+    "Silent gaps",
+    "Missed follow-ups",
+    "Resume consistency",
+    "JD coverage",
+    "Strengths & priority improvements",
+    "Exchange-by-exchange detail",
+  ];
+  const indices = headings.map((heading) => text.indexOf(heading));
+  indices.forEach((idx, i) => {
+    assert.notEqual(idx, -1, `feedbackToPlainText must include the "${headings[i]}" heading`);
+  });
+  for (let i = 1; i < indices.length; i++) {
+    assert.ok(
+      indices[i] > indices[i - 1],
+      `feedbackToPlainText must render D-58's six sections in fixed order — "${headings[i]}" must come after "${headings[i - 1]}"`
+    );
+  }
+}
+
+// 2. Empty document (LIVE-20 empty): zero exchanges, zero resume findings,
+// zero JD items still returns a non-empty, non-whitespace string carrying
+// the header, the content-only claim line, and the no-substantive-questions
+// sentence — never an empty string, never a throw.
+{
+  const emptyDoc: FeedbackDocument = {
+    sessionId: "empty-fixture",
+    generatedAt: 0,
+    transcriptFingerprint: "",
+    exchanges: [],
+    resumeConsistency: [],
+    jdCoverage: [],
+    strengths: "",
+    priorityImprovements: "",
+    withheldRemarkCount: 0,
+  };
+  const text = feedbackToPlainText(emptyDoc, feedbackExportMetaFixture);
+  assert.ok(text.trim().length > 0, "a zero-exchange document must still produce a non-empty, non-whitespace string");
+  assert.ok(text.includes("Live Interview Feedback"), "the header must name the document even when it is empty");
+  assert.ok(
+    text.includes("does not score accent, fluency, pace, filler words, or confidence"),
+    "the content-only claim line must be present even on an empty document"
+  );
+  assert.ok(
+    text.includes("No substantive questions were found in this take."),
+    "a zero-exchange document must state that no substantive questions were found"
+  );
+}
+
+// 3. Empty sections (LIVE-20 empty): a document with exchanges but no
+// silent gaps still contains the Silent gaps heading and its empty-state
+// sentence — a heading is never omitted because its list is empty.
+{
+  const docNoGaps: FeedbackDocument = {
+    ...feedbackFixtureDoc,
+    exchanges: [
+      makeExchange({
+        exchangeIndex: 0,
+        subAsks: [makeSubAsk({ text: "only-asked", source: "asked", coverage: "ADDRESSED" })],
+      }),
+    ],
+  };
+  const text = feedbackToPlainText(docNoGaps, feedbackExportMetaFixture);
+  assert.ok(text.includes("Silent gaps"), "the Silent gaps heading must never be omitted, even when its list is empty");
+  assert.ok(
+    text.includes("Every sub-ask the interviewer asked was addressed."),
+    "an empty Silent gaps section must still state its empty-state sentence, matching the screen's wording"
+  );
+}
+
+// 4. Unverified evidence: a sub-ask with quoteUnverified true produces the
+// no-quotable-evidence statement, and its own (unverifiable) quote text
+// never appears in the export.
+{
+  const unverifiedSubAsk = makeSubAsk({
+    text: "unverified-sub-ask",
+    source: "asked",
+    coverage: "PARTIAL",
+    evidenceQuote: "something that was never actually said",
+    quoteUnverified: true,
+  });
+  const docUnverified: FeedbackDocument = {
+    ...feedbackFixtureDoc,
+    exchanges: [makeExchange({ exchangeIndex: 0, subAsks: [unverifiedSubAsk] })],
+  };
+  const text = feedbackToPlainText(docUnverified, feedbackExportMetaFixture);
+  assert.ok(
+    text.includes("No quotable evidence for this was found in the transcript."),
+    "an unverified sub-ask must export the same no-quotable-evidence statement the screen shows"
+  );
+  assert.ok(
+    !text.includes(unverifiedSubAsk.evidenceQuote),
+    "an unverified sub-ask's own unverifiable quote text must never appear in the export"
+  );
+}
+
+// 5. Timestamp prefix (RESEARCH Pattern 4): a verified sub-ask's quoted
+// line carries a bracketed mm:ss prefix matching
+// formatElapsed(evidenceStartMs).
+{
+  const verifiedSubAsk = makeSubAsk({
+    text: "verified-sub-ask",
+    source: "asked",
+    coverage: "ADDRESSED",
+    evidenceQuote: "I led the migration end to end.",
+    evidenceSegmentSeq: 5,
+    evidenceStartMs: 187_000,
+    quoteUnverified: false,
+  });
+  const docVerified: FeedbackDocument = {
+    ...feedbackFixtureDoc,
+    exchanges: [makeExchange({ exchangeIndex: 0, subAsks: [verifiedSubAsk] })],
+  };
+  const text = feedbackToPlainText(docVerified, feedbackExportMetaFixture);
+  const expectedLine = `[${formatElapsed(187_000)}] "I led the migration end to end."`;
+  assert.ok(
+    text.includes(expectedLine),
+    `a verified sub-ask's quoted line must carry a [${formatElapsed(187_000)}] prefix matching formatElapsed(evidenceStartMs)`
+  );
+}
+
+// 6. Withheld disclosure (D-68): a document with withheldRemarkCount above
+// zero produces a line naming that count; a document with zero produces no
+// such line.
+{
+  const docWithheld: FeedbackDocument = { ...feedbackFixtureDoc, withheldRemarkCount: 2 };
+  const textWithheld = feedbackToPlainText(docWithheld, feedbackExportMetaFixture);
+  assert.ok(
+    textWithheld.includes("2 remarks about delivery were withheld from this record"),
+    "a document with withheldRemarkCount above zero must produce a line naming that count"
+  );
+
+  const docNoWithheld: FeedbackDocument = { ...feedbackFixtureDoc, withheldRemarkCount: 0 };
+  const textNoWithheld = feedbackToPlainText(docNoWithheld, feedbackExportMetaFixture);
+  assert.ok(
+    !textNoWithheld.includes("withheld from this record"),
+    "a document with zero withheld remarks must produce no withheld-remark disclosure line"
+  );
+}
+
+// 7. Line endings: the output contains no carriage return, and ends with
+// exactly one trailing newline, matching formatTranscriptText's own
+// convention.
+{
+  const text = feedbackToPlainText(feedbackFixtureDoc, feedbackExportMetaFixture);
+  assert.ok(!text.includes("\r"), "feedbackToPlainText must never emit a carriage return");
+  assert.ok(
+    text.endsWith("\n") && !text.endsWith("\n\n"),
+    "feedbackToPlainText must end with exactly one trailing newline"
+  );
+}
+
+// 8. Purity: calling feedbackToPlainText twice on the same document returns
+// identical strings, and the input document is never mutated.
+{
+  const beforeCall = structuredClone(feedbackFixtureDoc);
+  const first = feedbackToPlainText(feedbackFixtureDoc, feedbackExportMetaFixture);
+  const second = feedbackToPlainText(feedbackFixtureDoc, feedbackExportMetaFixture);
+  assert.equal(first, second, "calling feedbackToPlainText twice on the same document must return identical strings");
+  assert.deepEqual(
+    feedbackFixtureDoc,
+    beforeCall,
+    "feedbackToPlainText must never mutate its input document"
   );
 }
 
