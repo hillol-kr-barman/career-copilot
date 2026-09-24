@@ -23,9 +23,7 @@ import builtWorkletUrl from "./pcmTap.worklet.ts?worker&url";
  * class i extends AudioWorkletProcessor`, and the dev module begins
  * `const BLOCK_SIZE = 4096;` with no import statement.
  */
-const workletUrl = import.meta.env.DEV
-  ? builtWorkletUrl.split("?")[0]
-  : builtWorkletUrl;
+const workletUrl = import.meta.env.DEV ? builtWorkletUrl.split("?")[0] : builtWorkletUrl;
 
 /**
  * D-39's second consumer on an already-acquired `MediaStream` — a live
@@ -73,7 +71,7 @@ export interface AudioTapHandle {
  */
 export async function createAudioTap(
   stream: MediaStream,
-  onPcm16k: (pcm: Float32Array) => void
+  onPcm16k: (pcm: Float32Array) => void,
 ): Promise<AudioTapHandle | null> {
   try {
     const AudioContextCtor =

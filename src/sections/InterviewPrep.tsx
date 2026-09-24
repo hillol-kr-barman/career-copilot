@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
+import { toolReadiness } from "../lib/readiness";
 import { CollapsibleSection } from "../components/CollapsibleSection";
 import { FileUploader } from "../components/FileUploader";
 import { InterviewScoringTable } from "../components/InterviewScoringTable";
@@ -55,13 +56,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
   const [customEvalPrompt, setCustomEvalPrompt] = useState("");
   const [evalPromptFileName, setEvalPromptFileName] = useState("");
 
-  const lockedReason = !context.resumeText.trim()
-    ? "Add your resume above to generate interview questions."
-    : !context.jobDescription.trim()
-      ? "Paste the job description above to generate interview questions."
-      : !apiKey.trim()
-        ? "Connect your API key at the top of the page to generate questions."
-        : null;
+  const lockedReason = toolReadiness(context, apiKey).prep;
 
   const exportMeta = { appliedPosition: context.appliedPosition };
 
@@ -173,24 +168,24 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
   return (
     <ToolSection
       id="tool-interview-prep"
-      step="Tool 3"
+      step="04"
+      phase="Preparation"
       title="Interview Preparation"
-      subtitle="Questions you'll actually be asked, with model answers built from your resume"
+      subtitle="The questions you'll be asked, with answers from your resume."
       lockedReason={lockedReason}
     >
       <div className="flex flex-col gap-5">
         <div className="flex flex-col gap-4">
-          <p className="text-xs text-[#9aa3b0] leading-relaxed max-w-2xl">
-            Questions are tailored to the job description, your resume
-            {context.appliedPosition ? ` and the ${context.appliedPosition} role` : ""}. Your
-            education is read from the resume, and every answer is grounded in what it actually
-            says.
+          <p className="text-[15px] text-ink-soft leading-relaxed measure">
+            Tailored to the job description and your resume
+            {context.appliedPosition ? `, for the ${context.appliedPosition} role` : ""}. Every
+            answer is grounded in what your resume actually says.
           </p>
 
           <button
             onClick={handleGenerate}
             disabled={isGenerating}
-            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+            className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isGenerating ? (
               <>
@@ -224,7 +219,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
         </div>
 
         {error && (
-          <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
+          <div className="p-3 bg-mark/10 text-mark border border-mark/15 rounded-control text-[15px] flex items-center gap-2 font-medium">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>{error}</span>
           </div>
@@ -232,8 +227,8 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
 
         {/* ── Q&A set ──────────────────────────────────────────────────── */}
         {pairs.length > 0 && (
-          <div className="flex flex-col gap-4 border-t border-[rgba(255,255,255,0.07)] pt-5">
-            <span className="text-[10px] font-bold text-[#6b7685] tracking-wider uppercase">
+          <div className="flex flex-col gap-4 border-t border-rule pt-5">
+            <span className="text-xs font-bold text-ink-muted tracking-wider">
               {pairs.length} question{pairs.length === 1 ? "" : "s"} prepared
             </span>
 
@@ -243,26 +238,26 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                 return (
                   <li
                     key={i}
-                    className="bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] overflow-hidden"
+                    className="bg-sunken border border-rule rounded-control overflow-hidden"
                   >
                     <button
                       onClick={() => setOpenPair(isOpen ? null : i)}
-                      className="w-full flex items-start gap-3 text-left p-4 hover:bg-[rgba(255,255,255,0.02)] transition-colors"
+                      className="w-full flex items-start gap-3 text-left p-4 hover:bg-ink/[0.03] transition-colors"
                     >
-                      <span className="text-[11px] font-mono font-bold text-[#00d4dc] mt-0.5 shrink-0">
+                      <span className="text-[13px] font-mono font-bold text-accent mt-0.5 shrink-0">
                         {String(i + 1).padStart(2, "0")}
                       </span>
-                      <span className="flex-1 text-sm text-[#eef0f3] font-medium leading-relaxed">
+                      <span className="flex-1 text-[15px] text-ink font-medium leading-relaxed measure">
                         {pair.question}
                       </span>
                       <span className="flex items-center gap-2 shrink-0">
                         {pair.category && (
-                          <span className="hidden md:inline text-[9px] font-mono font-semibold uppercase tracking-wider text-[#6b7685] border border-[rgba(255,255,255,0.07)] rounded-[4px] px-2 py-0.5">
+                          <span className="hidden md:inline text-xs font-mono font-semibold tracking-wider text-ink-muted border border-rule rounded-[3px] px-2 py-0.5">
                             {pair.category}
                           </span>
                         )}
                         <ChevronDown
-                          className={`w-4 h-4 text-[#6b7685] transition-transform ${isOpen ? "rotate-180" : ""}`}
+                          className={`w-4 h-4 text-ink-muted transition-transform ${isOpen ? "rotate-180" : ""}`}
                         />
                       </span>
                     </button>
@@ -270,15 +265,15 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                     {isOpen && (
                       <div className="px-4 pb-4 pl-11 flex flex-col gap-3">
                         {pair.rationale && (
-                          <p className="text-[11px] text-[#6b7685] italic leading-relaxed">
+                          <p className="text-[13px] text-ink-muted italic leading-relaxed measure">
                             Why they ask: {pair.rationale}
                           </p>
                         )}
-                        <div className="bg-[#161a1e] border border-[rgba(255,255,255,0.07)] rounded-[6px] p-4">
-                          <span className="text-[9px] font-bold text-[#6b7685] uppercase tracking-wider">
+                        <div className="bg-surface border border-rule rounded-control p-4">
+                          <span className="text-xs font-bold text-ink-muted tracking-wider">
                             Your answer
                           </span>
-                          <p className="mt-2 whitespace-pre-wrap text-sm text-white/80 leading-relaxed">
+                          <p className="mt-2 whitespace-pre-wrap text-[15px] text-white/80 leading-relaxed measure">
                             {pair.answer}
                           </p>
                         </div>
@@ -292,10 +287,10 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
             {/* Export lives below the set: it is the last thing you want once
                 you've read the questions, and it was previously a row of small
                 chips above the fold that read as labels rather than actions. */}
-            <div className="border-t border-[rgba(255,255,255,0.07)] pt-5 flex flex-col gap-3">
+            <div className="border-t border-rule pt-5 flex flex-col gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-[#eef0f3]">Download your prep pack</h3>
-                <p className="text-xs text-[#6b7685] mt-1">
+                <h3 className="text-[15px] font-semibold text-ink">Download your prep pack</h3>
+                <p className="text-[15px] text-ink-muted mt-1">
                   All {pairs.length} question{pairs.length === 1 ? "" : "s"} with model answers.
                   Pick a format.
                 </p>
@@ -305,7 +300,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                 <button
                   onClick={() => handleExport("pdf")}
                   disabled={exporting !== null}
-                  className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-left"
+                  className="flex items-center gap-3 px-4 py-3.5 rounded-control bg-accent/10 hover:bg-accent/15 border border-accent/30 text-accent transition-all disabled:opacity-50 text-left"
                 >
                   {exporting === "pdf" ? (
                     <RefreshCw className="w-5 h-5 animate-spin shrink-0" />
@@ -313,17 +308,17 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                     <FileType2 className="w-5 h-5 shrink-0" />
                   )}
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold">
+                    <span className="block text-[15px] font-semibold">
                       {exporting === "pdf" ? "Building…" : "PDF"}
                     </span>
-                    <span className="block text-[11px] text-[#6b7685]">Print or share</span>
+                    <span className="block text-[13px] text-ink-muted">Print or share</span>
                   </span>
                 </button>
 
                 <button
                   onClick={() => handleExport("docx")}
                   disabled={exporting !== null}
-                  className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-left"
+                  className="flex items-center gap-3 px-4 py-3.5 rounded-control bg-accent/10 hover:bg-accent/15 border border-accent/30 text-accent transition-all disabled:opacity-50 text-left"
                 >
                   {exporting === "docx" ? (
                     <RefreshCw className="w-5 h-5 animate-spin shrink-0" />
@@ -331,10 +326,10 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                     <FileText className="w-5 h-5 shrink-0" />
                   )}
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold">
+                    <span className="block text-[15px] font-semibold">
                       {exporting === "docx" ? "Building…" : "Word"}
                     </span>
-                    <span className="block text-[11px] text-[#6b7685]">Editable .docx</span>
+                    <span className="block text-[13px] text-ink-muted">Editable .docx</span>
                   </span>
                 </button>
 
@@ -343,12 +338,12 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                     downloadText("interview-prep-qa.txt", qaToPlainText(pairs, exportMeta))
                   }
                   disabled={exporting !== null}
-                  className="flex items-center gap-3 px-4 py-3.5 rounded-[6px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] text-[#9aa3b0] hover:text-[#eef0f3] hover:border-[rgba(255,255,255,0.14)] transition-all active:scale-[0.98] disabled:opacity-50 text-left"
+                  className="flex items-center gap-3 px-4 py-3.5 rounded-control border border-rule bg-sunken text-ink-soft hover:text-ink hover:border-rule transition-all disabled:opacity-50 text-left"
                 >
                   <Download className="w-5 h-5 shrink-0" />
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold">Plain text</span>
-                    <span className="block text-[11px] text-[#6b7685]">Paste anywhere</span>
+                    <span className="block text-[15px] font-semibold">Plain text</span>
+                    <span className="block text-[13px] text-ink-muted">Paste anywhere</span>
                   </span>
                 </button>
               </div>
@@ -357,7 +352,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
         )}
 
         {/* ── Interviewer scoring ledger (optional) ────────────────────── */}
-        <div className="border-t border-[rgba(255,255,255,0.07)] pt-5">
+        <div className="border-t border-rule pt-5">
           <CollapsibleSection
             icon={<ClipboardList className="w-3.5 h-3.5" />}
             title="Interviewer scoring ledger"
@@ -368,58 +363,58 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
 
               {/* Aggregates */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
-                <div className="bg-[#1c2128] border border-[rgba(255,255,255,0.07)] p-5 rounded-[8px] flex flex-col items-center justify-center gap-2">
-                  <span className="text-[10px] font-bold text-[#6b7685] uppercase tracking-wider">
+                <div className="bg-sunken border border-rule p-5 rounded-control flex flex-col items-center justify-center gap-2">
+                  <span className="text-xs font-bold text-ink-muted tracking-wider">
                     STAR average
                   </span>
                   <div className="flex items-baseline gap-1 mt-2">
-                    <span className="text-4xl font-extrabold font-mono text-[#eef0f3] tracking-tight">
+                    <span className="text-4xl font-extrabold font-mono text-ink tracking-tight">
                       {starAverage.toFixed(2)}
                     </span>
-                    <span className="text-[#6b7685] text-xs font-mono">/ 1.00</span>
+                    <span className="text-ink-muted text-[15px] font-mono">/ 1.00</span>
                   </div>
-                  <div className="w-full bg-[#161a1e] h-2 rounded-full overflow-hidden mt-2">
+                  <div className="w-full bg-surface h-2 rounded-full overflow-hidden mt-2">
                     <div
                       className={`h-full transition-all duration-500 rounded-full ${
                         starAverage >= 0.75
                           ? "bg-green-500"
                           : starAverage < 0.5
-                            ? "bg-red-500"
-                            : "bg-amber-500"
+                            ? "bg-mark"
+                            : "bg-warn"
                       }`}
                       style={{ width: `${starAverage * 100}%` }}
                     />
                   </div>
-                  <p className="text-[11px] text-[#6b7685] mt-1">
+                  <p className="text-[13px] text-ink-muted mt-1">
                     Competency average {competencyAverage.toFixed(2)} · overall{" "}
                     {overallAverage.toFixed(2)}
                   </p>
                 </div>
 
-                <div className="bg-[#1c2128] border border-[rgba(255,255,255,0.07)] p-5 rounded-[8px] flex flex-col items-center justify-center gap-2">
-                  <span className="text-[10px] font-bold text-[#6b7685] uppercase tracking-wider">
+                <div className="bg-sunken border border-rule p-5 rounded-control flex flex-col items-center justify-center gap-2">
+                  <span className="text-xs font-bold text-ink-muted tracking-wider">
                     Strong answers (STAR ≥ 0.75)
                   </span>
                   <span className="text-4xl font-extrabold font-mono text-green-600 mt-2">
                     {strongAnswers}
                   </span>
-                  <p className="text-[11px] text-[#6b7685] mt-1">
+                  <p className="text-[13px] text-ink-muted mt-1">
                     out of {scoreRows.length} question{scoreRows.length === 1 ? "" : "s"} assessed
                   </p>
                 </div>
 
-                <div className="bg-[#1c2128] border border-[rgba(255,255,255,0.07)] p-5 rounded-[8px] flex flex-col items-center justify-center gap-2">
-                  <span className="text-[10px] font-bold text-[#6b7685] uppercase tracking-wider">
+                <div className="bg-sunken border border-rule p-5 rounded-control flex flex-col items-center justify-center gap-2">
+                  <span className="text-xs font-bold text-ink-muted tracking-wider">
                     Weak answers (STAR &lt; 0.5)
                   </span>
                   <span
                     className={`text-4xl font-extrabold font-mono mt-2 ${
-                      weakAnswers > 0 ? "text-red-500" : "text-[#eef0f3]"
+                      weakAnswers > 0 ? "text-mark" : "text-ink"
                     }`}
                   >
                     {weakAnswers}
                   </span>
-                  <p className="text-[11px] text-[#6b7685] mt-1">
+                  <p className="text-[13px] text-ink-muted mt-1">
                     out of {scoreRows.length} question{scoreRows.length === 1 ? "" : "s"} assessed
                   </p>
                 </div>
@@ -429,7 +424,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                 <button
                   onClick={handleEvaluate}
                   disabled={isEvaluating || !apiKey.trim()}
-                  className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm py-4 uppercase tracking-widest rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+                  className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {isEvaluating ? (
                     <>
@@ -465,18 +460,20 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
               {evaluationText && (
                 <div className="flex flex-col gap-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h3 className="text-sm font-semibold text-[#eef0f3]">
+                    <h3 className="text-[15px] font-semibold text-ink">
                       Executive candidate assessment
                     </h3>
                     <button
-                      onClick={() => downloadText("candidate-assessment-report.txt", evaluationText)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
+                      onClick={() =>
+                        downloadText("candidate-assessment-report.txt", evaluationText)
+                      }
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-control bg-accent/10 hover:bg-accent/15 border border-accent/30 text-accent text-[15px] font-semibold transition-all"
                     >
                       <Download className="w-3.5 h-3.5" />
                       Download
                     </button>
                   </div>
-                  <div className="bg-[#1c2128] rounded-[8px] p-5 md:p-6 border border-[rgba(255,255,255,0.07)]">
+                  <div className="bg-sunken rounded-control p-5 md:p-6 border border-rule">
                     <RenderMarkdown text={evaluationText} />
                   </div>
                 </div>

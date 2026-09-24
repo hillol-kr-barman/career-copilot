@@ -34,8 +34,8 @@ const SPEAKER_ICON: Record<Speaker, React.ComponentType<{ className?: string }>>
  * (T-04-12-05), so the band still reads correctly under a grayscale filter.
  */
 const SPEAKER_CLASSES: Record<Speaker, string> = {
-  candidate: "bg-[rgba(0,212,220,0.1)] border-[rgba(0,212,220,0.3)] text-[#00d4dc]",
-  interviewer: "bg-amber-500/10 border-amber-500/30 text-amber-400",
+  candidate: "bg-accent/10 border-accent/30 text-accent",
+  interviewer: "bg-warn/10 border-warn/30 text-warn",
 };
 
 /**
@@ -47,11 +47,7 @@ const SPEAKER_CLASSES: Record<Speaker, string> = {
  * existing `ToolSection` chrome and the four approved font weights (D-20) —
  * no fifth weight is introduced here.
  */
-export const SpeakerBanner: React.FC<SpeakerBannerProps> = ({
-  speaker,
-  onFlip,
-  disabled,
-}) => {
+export const SpeakerBanner: React.FC<SpeakerBannerProps> = ({ speaker, onFlip, disabled }) => {
   const Icon = SPEAKER_ICON[speaker];
 
   return (
@@ -60,15 +56,13 @@ export const SpeakerBanner: React.FC<SpeakerBannerProps> = ({
       onClick={onFlip}
       disabled={disabled}
       aria-label={`Now speaking: ${SPEAKER_LABEL[speaker]}. Press to mark the other side as speaking instead.`}
-      className={`w-full flex flex-col items-center gap-1.5 rounded-[8px] border py-5 px-4 transition-all active:scale-[0.99] disabled:opacity-50 ${SPEAKER_CLASSES[speaker]}`}
+      className={`w-full flex flex-col items-center gap-1.5 rounded-control border py-5 px-4 transition-all disabled:opacity-50 ${SPEAKER_CLASSES[speaker]}`}
     >
       <span className="flex items-center gap-2.5">
         <Icon className="w-7 h-7 shrink-0" aria-hidden="true" />
-        <span className="text-2xl font-extrabold tracking-tight">
-          {SPEAKER_LABEL[speaker]}
-        </span>
+        <span className="text-2xl font-extrabold tracking-tight">{SPEAKER_LABEL[speaker]}</span>
       </span>
-      <span className="text-[11px] font-semibold uppercase tracking-wider opacity-70">
+      <span className="text-[13px] font-semibold tracking-wider opacity-70">
         {disabled ? "Paused — this is who was marked" : "Now speaking — press Space or tap to flip"}
       </span>
     </button>

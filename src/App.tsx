@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from "react";
-import prismHero from "./assets/images/prism_hero_1781065935616.png";
+import { Moon, Sun } from "lucide-react";
 import { ApiKeySetup } from "./components/ApiKeySetup";
+import { LogoMark } from "./components/LogoMark";
+import { Wordmark } from "./components/Wordmark";
 import { SharedInputs } from "./components/SharedInputs";
+import { StepRail, Step } from "./components/StepRail";
 import { StoredDataNotice } from "./components/StoredDataNotice";
 import type { ClearOutcome } from "./components/StoredDataNotice";
 import { AiDetection } from "./sections/AiDetection";
@@ -9,10 +12,13 @@ import { ResumeAudit } from "./sections/ResumeAudit";
 import { InterviewPrep } from "./sections/InterviewPrep";
 import { LiveInterview } from "./sections/LiveInterview";
 import { deleteRecordingDB, hasStoredRecordings } from "./lib/recordingStore";
+import { toolReadiness } from "./lib/readiness";
+import { applyTheme, forgetTheme, loadTheme, storeTheme, Theme } from "./lib/theme";
 import { ProviderInfo, SharedContext } from "./types";
 
 const CONTEXT_STORAGE_KEY = "cc_shared_context";
 const API_KEY_STORAGE_KEY = "user_ai_api_key";
+const STEP_STORAGE_KEY = "cc_active_step";
 
 const EMPTY_CONTEXT: SharedContext = {
   resumeText: "",
@@ -20,6 +26,39 @@ const EMPTY_CONTEXT: SharedContext = {
   jobDescription: "",
   appliedPosition: "",
 };
+
+const STEP_IDS = ["details", "detection", "audit", "prep", "live"] as const;
+type StepId = (typeof STEP_IDS)[number];
+
+/**
+ * One step's panel. Every step stays mounted and is hidden rather than
+ * unmounted.
+ *
+ * This is not an optimisation. Live Interview holds an open MediaStream, a
+ * wake lock, a Whisper worker and an IndexedDB handle for the take in
+ * progress — unmounting it to switch tabs would end someone's recording
+ * mid-interview. Resume Audit and Interview Prep hold generated reports that
+ * cost an API call, and losing those on a tab change would be its own bug.
+ *
+ * Declared at module scope, not inside App. A component defined inside the
+ * render body is a brand-new type on every render, so React unmounts and
+ * remounts its whole subtree on each keystroke — which would throw away the
+ * very state this wrapper exists to protect.
+ */
+const Panel: React.FC<{
+  id: StepId;
+  activeStep: StepId;
+  children: React.ReactNode;
+}> = ({ id, activeStep, children }) => (
+  <div
+    id={`steppanel-${id}`}
+    role="tabpanel"
+    aria-labelledby={`steptab-${id}`}
+    hidden={activeStep !== id}
+  >
+    {children}
+  </div>
+);
 
 const loadContext = (): SharedContext => {
   try {
@@ -32,9 +71,17 @@ const loadContext = (): SharedContext => {
 
 /** Read the key, falling back to the Gemini-only key name used before v2. */
 const loadApiKey = (): string =>
-  localStorage.getItem(API_KEY_STORAGE_KEY) ||
-  localStorage.getItem("user_gemini_api_key") ||
-  "";
+  localStorage.getItem(API_KEY_STORAGE_KEY) || localStorage.getItem("user_gemini_api_key") || "";
+
+/** Come back to the step you were on, not to the top of the workflow. */
+const loadStep = (): StepId => {
+  try {
+    const stored = localStorage.getItem(STEP_STORAGE_KEY);
+    return STEP_IDS.includes(stored as StepId) ? (stored as StepId) : "details";
+  } catch {
+    return "details";
+  }
+};
 
 export default function App() {
   const [context, setContext] = useState<SharedContext>(loadContext);
@@ -42,6 +89,8 @@ export default function App() {
   const [providerInfo, setProviderInfo] = useState<ProviderInfo | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState("");
+  const [activeStep, setActiveStep] = useState<StepId>(loadStep);
+  const [theme, setTheme] = useState<Theme>(loadTheme);
   // Set from the one-time mount probe below, from LiveInterview's
   // onRecordingStored the moment a new take is durably written (LIVE-09
   // follow-up — the mirror of clearedAt below), and to false by
@@ -61,6 +110,15 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(CONTEXT_STORAGE_KEY, JSON.stringify(context));
   }, [context]);
+
+  useEffect(() => {
+    localStorage.setItem(STEP_STORAGE_KEY, activeStep);
+  }, [activeStep]);
+
+  useEffect(() => {
+    applyTheme(theme);
+    storeTheme(theme);
+  }, [theme]);
 
   // Probe once on mount so the stored-data notice can name recordings
   // alongside the resume, job description and API key (D-12).
@@ -142,11 +200,13 @@ export default function App() {
     for (const key of [
       CONTEXT_STORAGE_KEY,
       API_KEY_STORAGE_KEY,
+      STEP_STORAGE_KEY,
       "user_gemini_api_key",
       "selected_gemini_model",
     ]) {
       localStorage.removeItem(key);
     }
+    forgetTheme();
     const deleteOutcome = await deleteRecordingDB();
     // Report what is actually on disk, not what was requested: a "blocked"
     // or "error" outcome means the database is still there, so re-probe
@@ -165,153 +225,126 @@ export default function App() {
     setApiKey("");
     setProviderInfo(null);
     setVerifyError("");
+    setActiveStep("details");
     return stillPresent ? "incomplete" : "cleared";
   };
 
-  return (
-    <div className="flex flex-col min-h-screen text-[#eef0f3] selection:bg-[#00d4dc] selection:text-[#0a0c0d]">
-      {/* Header — sticky. The translucent bar is the chrome itself rather than a
-          card inside it, so page content passing underneath reads as behind the
-          bar instead of colliding with a second border. */}
-      <header className="sticky top-0 z-50 w-full border-b border-[rgba(255,255,255,0.07)] bg-[#0e1012]/85 backdrop-blur-md supports-[backdrop-filter]:bg-[#0e1012]/70">
-        <div className="w-full max-w-5xl mx-auto px-4">
-          <div className="flex items-center justify-between gap-4 h-14">
-            <a href="#top" className="flex items-center gap-2 shrink-0">
-              <span className="w-2.5 h-2.5 rounded-full bg-[#00d4dc] animate-pulse" />
-              <span className="font-display font-semibold text-xs md:text-sm tracking-widest text-[#eef0f3] uppercase">
-                CAREER COPILOT
-              </span>
-            </a>
+  const readiness = toolReadiness(context, apiKey);
 
-            <nav className="flex items-center gap-0.5 md:gap-1">
-              <a
-                href="#tool-ai-detection"
-                className="px-2 md:px-3 py-2 rounded-[5px] text-[11px] md:text-xs font-semibold tracking-wide text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] transition-all"
-              >
-                AI Detection
-              </a>
-              <a
-                href="#tool-resume-audit"
-                className="px-2 md:px-3 py-2 rounded-[5px] text-[11px] md:text-xs font-semibold tracking-wide text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] transition-all"
-              >
-                Resume Audit
-              </a>
-              <a
-                href="#tool-interview-prep"
-                className="px-2 md:px-3 py-2 rounded-[5px] text-[11px] md:text-xs font-semibold tracking-wide text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] transition-all"
-              >
-                Interview Prep
-              </a>
-              <a
-                href="#tool-live-interview"
-                className="px-2 md:px-3 py-2 rounded-[5px] text-[11px] md:text-xs font-semibold tracking-wide text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] transition-all"
-              >
-                Live Interview
-              </a>
-            </nav>
+  const steps: Step[] = [
+    { id: "details", label: "Your details" },
+    { id: "detection", label: "AI check", lockedReason: readiness.detection },
+    { id: "audit", label: "Resume audit", lockedReason: readiness.audit },
+    { id: "prep", label: "Interview prep", lockedReason: readiness.prep },
+    // Live Interview records in the browser and needs no shared context, so
+    // it is never gated here — its own capability check lives inside it.
+    { id: "live", label: "Live interview" },
+  ];
+
+  return (
+    // relative + z-10 lifts the content above the fixed grid layer painted
+    // on body::before.
+    <div className="relative z-10 flex min-h-screen flex-col">
+      {/* ── Masthead ─────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-50 border-b border-rule bg-ground/80 backdrop-blur-md">
+        <div className="mx-auto w-full max-w-[1120px] px-6">
+          <div className="flex h-16 items-center justify-between gap-4">
+            <Wordmark />
+
+            <button
+              type="button"
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              className="rounded-control border border-rule p-2 text-ink-soft transition-colors hover:border-rule-strong hover:text-ink"
+              aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            >
+              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
           </div>
         </div>
       </header>
 
-      <main
-        id="top"
-        className="flex-1 w-full max-w-5xl mx-auto px-4 pt-4 pb-8 md:pt-6 md:pb-10 flex flex-col gap-6"
-      >
-        {/* Hero */}
-        <div className="relative overflow-hidden rounded-[10px] bg-[#161a1e] border border-[rgba(255,255,255,0.07)]">
-          <div className="absolute inset-0 z-0 opacity-5">
-            <img
-              src={prismHero}
-              alt=""
-              aria-hidden="true"
-              className="w-full h-full object-cover scale-105 blur-sm"
-            />
-          </div>
-          <div className="relative z-10 px-6 py-8 md:px-10 md:py-10 flex flex-col gap-4">
-            <p className="text-[10px] md:text-xs font-semibold uppercase tracking-widest text-[#00d4dc] bg-[rgba(0,212,220,0.08)] border border-[rgba(0,212,220,0.25)] px-3.5 py-1.5 rounded-[4px] w-fit">
-              ✦ Powered by your own AI key
-            </p>
-            <h1 className="text-3xl md:text-5xl font-light font-display tracking-tight leading-none text-[#eef0f3] max-w-3xl">
-              Resume and <span className="font-medium text-[#00d4dc]">Interview Tool</span>
-            </h1>
-            <p className="text-xs md:text-sm text-[#9aa3b0] max-w-2xl leading-relaxed font-sans">
-              Add your resume once. Check whether it reads as AI-written, score your odds of a
-              callback against a specific job description, and walk into the interview with
-              questions and answers already prepared.
-            </p>
-          </div>
+      <main className="mx-auto w-full max-w-[1120px] flex-1 px-6">
+        {/* Connection strip — plumbing the tools need, not a step in the work. */}
+        <div className="border-b border-rule py-5">
+          <ApiKeySetup
+            apiKey={apiKey}
+            onApiKeyChange={handleApiKeyChange}
+            providerInfo={providerInfo}
+            isVerifying={isVerifying}
+            verifyError={verifyError}
+          />
         </div>
 
-        <ApiKeySetup
-          apiKey={apiKey}
-          onApiKeyChange={handleApiKeyChange}
-          providerInfo={providerInfo}
-          isVerifying={isVerifying}
-          verifyError={verifyError}
+        <StepRail
+          steps={steps}
+          activeId={activeStep}
+          onSelect={(id) => setActiveStep(id as StepId)}
         />
 
-        <SharedInputs context={context} onChange={updateContext} />
+        {/* The left inset is the margin column the "NN — NAME" labels hang in,
+            the way the reference sets its sections. It collapses below md,
+            where there is no room for two columns. */}
+        <div className="py-12 md:py-16 md:pl-44">
+          <Panel id="details" activeStep={activeStep}>
+            <SharedInputs context={context} onChange={updateContext} />
+          </Panel>
 
-        <AiDetection resumeText={context.resumeText} />
+          <Panel id="detection" activeStep={activeStep}>
+            <AiDetection resumeText={context.resumeText} />
+          </Panel>
 
-        <ResumeAudit context={context} apiKey={apiKey} />
+          <Panel id="audit" activeStep={activeStep}>
+            <ResumeAudit context={context} apiKey={apiKey} />
+          </Panel>
 
-        <InterviewPrep context={context} apiKey={apiKey} />
+          <Panel id="prep" activeStep={activeStep}>
+            <InterviewPrep context={context} apiKey={apiKey} />
+          </Panel>
 
-        <LiveInterview
-          context={context}
-          apiKey={apiKey}
-          clearedAt={clearedAt}
-          onRecordingStored={() => setHasRecordings(true)}
-        />
+          <Panel id="live" activeStep={activeStep}>
+            <LiveInterview
+              context={context}
+              apiKey={apiKey}
+              clearedAt={clearedAt}
+              onRecordingStored={() => setHasRecordings(true)}
+            />
+          </Panel>
+        </div>
 
-        <StoredDataNotice
-          hasResume={Boolean(context.resumeText.trim())}
-          hasJobDescription={Boolean(context.jobDescription.trim())}
-          hasApiKey={Boolean(apiKey.trim())}
-          hasRecordings={hasRecordings}
-          onClear={handleClearStoredData}
-        />
+        <div className="border-t border-rule py-6">
+          <StoredDataNotice
+            hasResume={Boolean(context.resumeText.trim())}
+            hasJobDescription={Boolean(context.jobDescription.trim())}
+            hasApiKey={Boolean(apiKey.trim())}
+            hasRecordings={hasRecordings}
+            onClear={handleClearStoredData}
+          />
+        </div>
       </main>
 
-      <footer className="w-full mt-auto border-t border-[rgba(255,255,255,0.07)] bg-[#0e1012]">
-        <div className="w-full max-w-5xl mx-auto px-4 py-10 flex flex-col gap-8">
-          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-8">
-            <div className="flex flex-col gap-2.5 max-w-md">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-[#00d4dc]" />
-                <span className="font-display font-semibold text-xs tracking-widest text-[#eef0f3] uppercase">
-                  Career Copilot
-                </span>
-              </div>
-              <p className="text-xs text-[#6b7685] leading-relaxed">
-                Three tools over one resume: check whether it reads as AI-written, score your odds
-                of a callback against a job description, and prepare for the interview.
-              </p>
-              <p className="text-[11px] text-[#6b7685] leading-relaxed">
-                Bring your own AI key — it stays in your browser, is sent only to your chosen
-                provider, and is never stored on the server.
-              </p>
-            </div>
+      {/* ── Colophon ─────────────────────────────────────────────────────
+          Set a step below body size throughout: this is the plate at the foot
+          of the page, not part of the work on it. */}
+      <footer className="border-t border-rule">
+        <div className="mx-auto w-full max-w-[1120px] px-6 py-9">
+          <div className="flex flex-col gap-6 md:flex-row md:justify-between">
+            <p className="measure text-sm leading-relaxed text-ink-muted">
+              Your key stays in this browser, goes only to your provider, and never touches the
+              server.
+            </p>
 
-            <div className="flex flex-col gap-2 md:text-right shrink-0">
-              <span className="text-[10px] font-bold text-[#6b7685] uppercase tracking-wider">
-                Built by
-              </span>
-              <span className="text-xs text-[#9aa3b0] font-medium">Hillol Kr Barman</span>
-              <span className="text-[11px] text-[#6b7685]">
-                Made for QIBA · a collaboration of alumni
-              </span>
+            <div className="flex shrink-0 items-start gap-3 text-sm text-ink-muted md:flex-row-reverse md:text-right">
+              <LogoMark className="mt-0.5 h-5 w-6 shrink-0 text-accent" />
+              <div className="flex flex-col gap-0.5">
+                <span className="text-ink-soft">Hillol Kr Barman</span>
+                <span>Made for QIBA, a collaboration of alumni</span>
+              </div>
             </div>
           </div>
 
-          <div className="border-t border-[rgba(255,255,255,0.07)] pt-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <span className="text-[10px] tracking-widest text-[#6b7685] uppercase">
-              © {new Date().getFullYear()} Career Copilot
-            </span>
-            <span className="text-[10px] text-[#6b7685]">
-              Guidance only — not a hiring decision, and not career or legal advice.
-            </span>
+          <div className="mt-7 flex flex-col gap-2 border-t border-rule pt-5 font-mono text-xs text-ink-muted sm:flex-row sm:justify-between">
+            <span>© {new Date().getFullYear()} Career Copilot</span>
+            <span>Guidance only — not a hiring decision, not career or legal advice.</span>
           </div>
         </div>
       </footer>

@@ -29,7 +29,11 @@ const SIDE_PROMPT: Record<Speaker, string> = {
   candidate: "the candidate",
 };
 
-const freshSampleState = (): PreflightSampleState => ({ peakLevel: 0, sustainedMs: 0, cleared: false });
+const freshSampleState = (): PreflightSampleState => ({
+  peakLevel: 0,
+  sustainedMs: 0,
+  cleared: false,
+});
 
 /**
  * D-44's pre-flight model warm-up state, owned by `LiveInterview` for the
@@ -119,7 +123,9 @@ export const MicSetup: React.FC<MicSetupProps> = ({
   // that is the one state on this panel with something actually happening
   // in the background.
   const modelBadge = modelStatus.phase === "loading" ? "Model loading" : null;
-  const badge = [deviceBadge, modelBadge].filter((value): value is string => Boolean(value)).join(" · ") || null;
+  const badge =
+    [deviceBadge, modelBadge].filter((value): value is string => Boolean(value)).join(" · ") ||
+    null;
 
   const bothCleared = preflightCleared.interviewer && preflightCleared.candidate;
 
@@ -152,7 +158,7 @@ export const MicSetup: React.FC<MicSetupProps> = ({
           level,
           PREFLIGHT_SAMPLE_INTERVAL_MS,
           PREFLIGHT_FLOOR_RMS,
-          PREFLIGHT_SUSTAIN_MS
+          PREFLIGHT_SUSTAIN_MS,
         ),
       }));
     }, PREFLIGHT_SAMPLE_INTERVAL_MS);
@@ -189,10 +195,7 @@ export const MicSetup: React.FC<MicSetupProps> = ({
     >
       <div className="flex flex-col gap-5">
         <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="mic-device-select"
-            className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]"
-          >
+          <label htmlFor="mic-device-select" className="label">
             Input device
           </label>
           <select
@@ -202,7 +205,7 @@ export const MicSetup: React.FC<MicSetupProps> = ({
             onChange={(e) =>
               onSelectDevice(e.target.value === SYSTEM_DEFAULT_VALUE ? undefined : e.target.value)
             }
-            className="w-full bg-[#161a1e] border border-[rgba(255,255,255,0.07)] rounded-[6px] px-3 py-2.5 text-sm text-[#eef0f3] disabled:opacity-50"
+            className="w-full bg-surface border border-rule rounded-control px-3 py-2.5 text-[15px] text-ink disabled:opacity-50"
           >
             <option value={SYSTEM_DEFAULT_VALUE}>System default</option>
             {devices.map((device) => (
@@ -211,28 +214,28 @@ export const MicSetup: React.FC<MicSetupProps> = ({
               </option>
             ))}
           </select>
-          <p className="text-xs text-[#6b7685] leading-relaxed">
-            Place the device on the table between both people, angled toward whoever sits
-            farther away — a laptop's built-in microphone array favors the person closest to it.
+          <p className="text-[15px] text-ink-muted leading-relaxed measure">
+            Place the device between both people, angled toward whoever sits farther away — built-in
+            mic arrays favour whoever is closest.
           </p>
           {fellBackToDefault && (
-            <p className="text-xs text-amber-400 leading-relaxed">{DEVICE_FALLBACK_NOTICE}</p>
+            <p className="text-[15px] text-warn leading-relaxed measure">
+              {DEVICE_FALLBACK_NOTICE}
+            </p>
           )}
           {disabled && (
-            <p className="text-xs text-[#6b7685] leading-relaxed">
+            <p className="text-[15px] text-ink-muted leading-relaxed measure">
               Locked while recording — stop to change the input device.
             </p>
           )}
         </div>
 
-        <div className="border-t border-[rgba(255,255,255,0.07)] pt-4 flex flex-col gap-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
-            Both-voices check
-          </span>
+        <div className="border-t border-rule pt-4 flex flex-col gap-3">
+          <span className="label">Both-voices check</span>
 
           {bothCleared ? (
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-500">
+              <span className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-good">
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 Both sides cleared this session
               </span>
@@ -240,7 +243,7 @@ export const MicSetup: React.FC<MicSetupProps> = ({
                 type="button"
                 onClick={handleRerun}
                 disabled={disabled}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#9aa3b0] hover:text-[#eef0f3] disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-ink-soft hover:text-ink disabled:opacity-50"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 Run pre-flight again
@@ -248,14 +251,14 @@ export const MicSetup: React.FC<MicSetupProps> = ({
             </div>
           ) : skipped ? (
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <p className="text-xs text-[#6b7685] leading-relaxed">
+              <p className="text-[15px] text-ink-muted leading-relaxed measure">
                 Skipped for now — a too-quiet side won't be caught until Phase 5.
               </p>
               <button
                 type="button"
                 onClick={() => setSkipped(false)}
                 disabled={disabled}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#9aa3b0] hover:text-[#eef0f3] disabled:opacity-50 shrink-0"
+                className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-ink-soft hover:text-ink disabled:opacity-50 shrink-0"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 Run pre-flight
@@ -263,12 +266,17 @@ export const MicSetup: React.FC<MicSetupProps> = ({
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              <p className="text-xs text-[#9aa3b0] leading-relaxed">
+              <p className="text-[15px] text-ink-soft leading-relaxed measure">
                 Ask {SIDE_PROMPT[activeSide]} to say a sentence out loud.
               </p>
 
               {SIDE_ORDER.slice(0, currentIndex + 1).map((side) => (
-                <PreflightSideRow key={side} side={side} state={sideStates[side]} isActive={side === activeSide} />
+                <PreflightSideRow
+                  key={side}
+                  side={side}
+                  state={sideStates[side]}
+                  isActive={side === activeSide}
+                />
               ))}
 
               <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -277,7 +285,7 @@ export const MicSetup: React.FC<MicSetupProps> = ({
                     type="button"
                     onClick={() => setCurrentIndex(currentIndex + 1)}
                     disabled={disabled}
-                    className="text-xs font-semibold text-[#00d4dc] hover:opacity-80 disabled:opacity-50"
+                    className="text-[15px] font-semibold text-accent hover:opacity-80 disabled:opacity-50"
                   >
                     Continue: test {SIDE_PROMPT[SIDE_ORDER[currentIndex + 1]]} →
                   </button>
@@ -286,11 +294,14 @@ export const MicSetup: React.FC<MicSetupProps> = ({
                     type="button"
                     onClick={() => {
                       setCurrentIndex(0);
-                      setSideStates({ interviewer: freshSampleState(), candidate: freshSampleState() });
+                      setSideStates({
+                        interviewer: freshSampleState(),
+                        candidate: freshSampleState(),
+                      });
                       notifiedRef.current = { interviewer: false, candidate: false };
                     }}
                     disabled={disabled}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#9aa3b0] hover:text-[#eef0f3] disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-ink-soft hover:text-ink disabled:opacity-50"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                     Start over from the first side
@@ -301,7 +312,7 @@ export const MicSetup: React.FC<MicSetupProps> = ({
                   type="button"
                   onClick={() => setSkipped(true)}
                   disabled={disabled}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#6b7685] hover:text-[#9aa3b0] disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-ink-muted hover:text-ink-soft disabled:opacity-50"
                 >
                   <SkipForward className="w-3.5 h-3.5" />
                   Skip — a too-quiet side won't be caught until Phase 5
@@ -309,7 +320,7 @@ export const MicSetup: React.FC<MicSetupProps> = ({
               </div>
 
               {currentIndex === SIDE_ORDER.length - 1 && !bothCleared && (
-                <p className="text-xs text-amber-400 leading-relaxed">
+                <p className="text-[15px] text-warn leading-relaxed measure">
                   {!preflightCleared.interviewer && !preflightCleared.candidate
                     ? "Neither side has cleared yet — move the device closer to whoever is speaking, or choose a different microphone above."
                     : `${preflightCleared.interviewer ? "The candidate" : "The interviewer"} hasn't cleared yet — move the device toward that side, or choose a different microphone above.`}
@@ -319,10 +330,8 @@ export const MicSetup: React.FC<MicSetupProps> = ({
           )}
         </div>
 
-        <div className="border-t border-[rgba(255,255,255,0.07)] pt-4 flex flex-col gap-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
-            Transcription model
-          </span>
+        <div className="border-t border-rule pt-4 flex flex-col gap-3">
+          <span className="label">Transcription model</span>
           <ModelStatusRow status={modelStatus} onRetry={onRetryModel} />
         </div>
       </div>
@@ -344,7 +353,8 @@ interface ModelStatusRowProps {
  * and (in the failed case) a retry.
  */
 const ModelStatusRow: React.FC<ModelStatusRowProps> = ({ status, onRetry }) => {
-  const pct = status.totalBytes > 0 ? Math.round((status.loadedBytes / status.totalBytes) * 100) : 0;
+  const pct =
+    status.totalBytes > 0 ? Math.round((status.loadedBytes / status.totalBytes) * 100) : 0;
   // 05-07-ENGINE-FIX-SUMMARY.md: the worker only ever reports "wasm" — this
   // stays a general mapping rather than a hardcoded "CPU" string so a future,
   // re-measured device change doesn't need this file touched too.
@@ -352,19 +362,19 @@ const ModelStatusRow: React.FC<ModelStatusRowProps> = ({ status, onRetry }) => {
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-1.5 text-xs font-semibold">
+      <div className="flex items-center gap-1.5 text-[15px] font-semibold">
         {status.phase === "loading" && (
-          <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin text-[#00d4dc]" />
+          <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin text-accent" />
         )}
-        {status.phase === "ready" && <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" />}
-        {status.phase === "failed" && <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-red-400" />}
+        {status.phase === "ready" && <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-good" />}
+        {status.phase === "failed" && <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-mark" />}
         <span
           className={
             status.phase === "ready"
-              ? "text-emerald-500"
+              ? "text-good"
               : status.phase === "failed"
-                ? "text-red-400"
-                : "text-[#9aa3b0]"
+                ? "text-mark"
+                : "text-ink-soft"
           }
         >
           {status.phase === "loading" && `Downloading the transcription model — ${pct}%`}
@@ -379,33 +389,34 @@ const ModelStatusRow: React.FC<ModelStatusRowProps> = ({ status, onRetry }) => {
 
       {status.phase === "loading" && (
         <>
-          <div className="relative w-full bg-[#161a1e] h-2 rounded-full overflow-hidden">
+          <div className="relative w-full bg-surface h-2 rounded-full overflow-hidden">
             <div
-              className="h-full bg-[#00d4dc] transition-all duration-150 rounded-full"
+              className="h-full bg-accent transition-all duration-150 rounded-full"
               style={{ width: `${pct}%` }}
             />
           </div>
-          <p className="text-xs text-[#6b7685] leading-relaxed">
-            Recording can start before this finishes — spoken audio is held and transcribed as
-            soon as the model is ready.
+          <p className="text-[15px] text-ink-muted leading-relaxed measure">
+            You can start recording now — audio is held and transcribed once the model is ready.
           </p>
         </>
       )}
 
       {status.phase === "ready" && describeRealtimeFactor(status.realtimeFactor) && (
-        <p className="text-xs text-[#6b7685] leading-relaxed">{describeRealtimeFactor(status.realtimeFactor)}</p>
+        <p className="text-[15px] text-ink-muted leading-relaxed measure">
+          {describeRealtimeFactor(status.realtimeFactor)}
+        </p>
       )}
 
       {status.phase === "failed" && (
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <p className="text-xs text-[#6b7685] leading-relaxed">
-            {status.message ?? "The transcription model could not be loaded."} The recording
-            itself will still work and the audio will still be saved.
+          <p className="text-[15px] text-ink-muted leading-relaxed measure">
+            {status.message ?? "The transcription model could not be loaded."} The recording itself
+            will still work and the audio will still be saved.
           </p>
           <button
             type="button"
             onClick={onRetry}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#9aa3b0] hover:text-[#eef0f3] shrink-0"
+            className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-ink-soft hover:text-ink shrink-0"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             Retry
@@ -431,12 +442,12 @@ const PreflightSideRow: React.FC<PreflightSideRowProps> = ({ side, state, isActi
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
-        <span className={`text-xs font-semibold ${isActive ? "text-[#eef0f3]" : "text-[#6b7685]"}`}>
+        <span className={`text-[15px] font-semibold ${isActive ? "text-ink" : "text-ink-muted"}`}>
           {label}
         </span>
         <span
-          className={`inline-flex items-center gap-1 text-[10px] font-semibold ${
-            state.cleared ? "text-emerald-500" : "text-[#6b7685]"
+          className={`inline-flex items-center gap-1 text-xs font-semibold ${
+            state.cleared ? "text-good" : "text-ink-muted"
           }`}
         >
           {state.cleared ? (
@@ -448,15 +459,15 @@ const PreflightSideRow: React.FC<PreflightSideRowProps> = ({ side, state, isActi
           )}
         </span>
       </div>
-      <div className="relative w-full bg-[#161a1e] h-2 rounded-full overflow-hidden">
+      <div className="relative w-full bg-surface h-2 rounded-full overflow-hidden">
         <div
           className={`h-full transition-all duration-150 rounded-full ${
-            state.cleared ? "bg-emerald-500" : "bg-[#00d4dc]"
+            state.cleared ? "bg-good" : "bg-accent"
           }`}
           style={{ width: `${pct}%` }}
         />
         {/* The audible floor, marked on the same bar the level fills — the pre-flight's whole point is showing this level clears it. */}
-        <div className="absolute top-0 bottom-0 w-px bg-[#eef0f3]/40" style={{ left: `${floorPct}%` }} />
+        <div className="absolute top-0 bottom-0 w-px bg-ink/40" style={{ left: `${floorPct}%` }} />
       </div>
     </div>
   );

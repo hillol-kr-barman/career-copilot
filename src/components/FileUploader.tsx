@@ -1,7 +1,13 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Upload, FileText, AlertCircle, X, RefreshCw } from "lucide-react";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+/** A document the parent already holds, restored from a previous session. */
+export interface ExistingDocument {
+  name: string;
+  chars: number;
+}
 
 interface FileUploaderProps {
   id: string;
@@ -9,6 +15,12 @@ interface FileUploaderProps {
   acceptTypes?: string;
   onTextLoaded: (text: string, filename: string) => void;
   placeholderText?: string;
+  /**
+   * Shown in place of the empty drop prompt when the session was restored from
+   * storage. Without it the box invited you to add a resume you had already
+   * added, directly above a line confirming it was loaded.
+   */
+  existing?: ExistingDocument | null;
 }
 
 /**
@@ -25,12 +37,31 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
   acceptTypes = ".txt,.csv,.md,.pdf,.docx",
   onTextLoaded,
   placeholderText = "Drag & drop files or click to upload",
+  existing = null,
 }) => {
   const [dragActive, setDragActive] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<{ name: string; size: string; chars?: number } | null>(null);
+  const [selectedFile, setSelectedFile] = useState<{
+    name: string;
+    /** Absent for a restored document: only its text was kept, not the file. */
+    size?: string;
+    chars?: number;
+  } | null>(existing ? { name: existing.name, chars: existing.chars } : null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Follow the parent when it drops the document out from under us — "Clear
+  // stored data" empties the context, and this box has to empty with it.
+  useEffect(() => {
+    if (!existing && !isExtracting) {
+      setSelectedFile(null);
+      setErrorMsg(null);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+    // Only react to the document going away, not to every keystroke of it
+    // arriving — handleFile already owns the populated case.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existing === null]);
 
   const getFileSizeString = (size: number): string => {
     if (size < 1024) return `${size} B`;
@@ -130,9 +161,11 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
 
   return (
     <div className="flex flex-col gap-2 w-full">
-      <label htmlFor={id} className="text-[10px] md:text-xs font-semibold tracking-wider text-[#6b7685] uppercase">
-        {label}
-      </label>
+      {label && (
+        <label htmlFor={id} className="text-[15px] font-medium text-ink-soft">
+          {label}
+        </label>
+      )}
 
       <div
         id={id}
@@ -141,10 +174,18 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
         onDragLeave={handleDrag}
         onDrop={handleDrop}
         onClick={onButtonClick}
-        className={`relative flex flex-col items-center justify-center border-2 border-dashed rounded-[8px] p-6 transition-all duration-200 cursor-pointer text-center select-none ${
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onButtonClick();
+          }
+        }}
+        className={`relative flex flex-col items-center justify-center rounded-control px-6 py-10 transition-colors cursor-pointer text-center select-none border ${
           dragActive
-            ? "border-[#00d4dc] bg-[rgba(0,212,220,0.12)] scale-[1.01]"
-            : "border-[rgba(255,255,255,0.07)] bg-[#1c2128] hover:border-[rgba(0,212,220,0.4)] hover:bg-[rgba(0,212,220,0.05)]"
+            ? "border-accent border-solid bg-accent/10"
+            : "border-dashed border-rule-strong bg-sunken/60 hover:border-accent hover:bg-accent/5"
         }`}
       >
         <input
@@ -156,40 +197,39 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
         />
 
         {!selectedFile ? (
-          <div className="flex flex-col items-center gap-2">
-            <div className="p-3 rounded-full bg-[#161a1e] border border-[rgba(255,255,255,0.07)] text-[#6b7685]">
-              <Upload className="w-5 h-5" />
-            </div>
-            <p className="text-xs md:text-sm font-medium text-[#9aa3b0]">{placeholderText}</p>
-            <p className="text-[10px] md:text-xs text-[#6b7685]">
-              PDF, DOCX, TXT, MD, CSV · max 5MB
-            </p>
+          <div className="flex flex-col items-center gap-2.5">
+            <Upload className="w-6 h-6 text-ink-muted" />
+            <p className="text-base text-ink">{placeholderText}</p>
+            <p className="text-sm text-ink-muted">PDF, DOCX, TXT, MD or CSV, up to 5MB</p>
           </div>
         ) : (
-          <div className="flex items-center justify-between w-full p-2 bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[6px]">
-            <div className="flex items-center gap-3 text-left overflow-hidden">
-              <div className="p-2 bg-[rgba(0,212,220,0.1)] text-[#00d4dc] rounded-[5px] shrink-0">
-                {isExtracting ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <FileText className="w-4 h-4" />
-                )}
-              </div>
+          <div className="flex items-center justify-between w-full gap-3 text-left">
+            <div className="flex items-center gap-3 overflow-hidden">
+              {isExtracting ? (
+                <RefreshCw className="w-5 h-5 shrink-0 text-accent animate-spin" />
+              ) : (
+                <FileText className="w-5 h-5 shrink-0 text-accent" />
+              )}
               <div className="overflow-hidden">
-                <p className="text-xs font-semibold text-[#eef0f3] truncate">{selectedFile.name}</p>
-                <p className="text-[10px] text-[#9aa3b0]">
+                <p className="text-base font-medium text-ink truncate">{selectedFile.name}</p>
+                <p className="text-sm text-ink-soft tnum">
                   {isExtracting
-                    ? "Extracting text…"
-                    : `${selectedFile.size}${
-                        selectedFile.chars ? ` • ${selectedFile.chars.toLocaleString()} characters read` : ""
-                      }`}
+                    ? "Reading the text…"
+                    : [
+                        selectedFile.size,
+                        selectedFile.chars
+                          ? `${selectedFile.chars.toLocaleString()} characters read`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(", ")}
                 </p>
               </div>
             </div>
             <button
               onClick={clearFile}
-              className="p-1 text-[#6b7685] hover:text-[#9aa3b0] rounded-[4px] hover:bg-[#1c2128] transition-colors shrink-0"
-              title="Remove File"
+              className="p-1.5 text-ink-muted hover:text-mark rounded-[3px] transition-colors shrink-0"
+              title="Remove this file"
             >
               <X className="w-4 h-4" />
             </button>
@@ -198,10 +238,10 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
       </div>
 
       {errorMsg && (
-        <div className="flex items-start gap-2 text-[10px] md:text-xs text-red-500 font-medium bg-red-500/10 p-2 rounded-[5px] border border-red-500/20">
-          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+        <p className="flex items-start gap-2 text-[15px] text-mark border-l-2 border-mark pl-3 py-1">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
           <span>{errorMsg}</span>
-        </div>
+        </p>
       )}
     </div>
   );

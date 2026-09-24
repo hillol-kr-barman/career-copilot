@@ -75,11 +75,16 @@ export interface MissedFollowUp {
  */
 function collectUnaddressedBySource(
   doc: FeedbackDocument,
-  source: SubAsk["source"]
+  source: SubAsk["source"],
 ): { exchangeIndex: number; questionText: string; subAskText: string; coverage: Coverage }[] {
   const exchanges: Exchange[] = Array.isArray(doc?.exchanges) ? doc.exchanges : [];
   const sorted = [...exchanges].sort((a, b) => a.exchangeIndex - b.exchangeIndex);
-  const results: { exchangeIndex: number; questionText: string; subAskText: string; coverage: Coverage }[] = [];
+  const results: {
+    exchangeIndex: number;
+    questionText: string;
+    subAskText: string;
+    coverage: Coverage;
+  }[] = [];
   for (const exchange of sorted) {
     for (const subAsk of exchange.subAsks) {
       if (subAsk.source === source && subAsk.coverage !== "ADDRESSED") {
@@ -146,7 +151,7 @@ export function deriveJdCoverage(doc: FeedbackDocument): JdCoverageItem[] {
  */
 export function filterEvidencedResumeFindings(
   findings: ResumeConsistencyFinding[],
-  segments: TranscriptSegment[]
+  segments: TranscriptSegment[],
 ): ResumeConsistencyFinding[] {
   const list: ResumeConsistencyFinding[] = Array.isArray(findings) ? findings : [];
   const results: ResumeConsistencyFinding[] = [];
@@ -181,9 +186,17 @@ export function filterEvidencedResumeFindings(
 export function deriveScoreRow(
   questionDescription: string,
   raw:
-    | { s?: unknown; tE?: unknown; a?: unknown; rT?: unknown; cS?: unknown; aE?: unknown; rA?: unknown }
+    | {
+        s?: unknown;
+        tE?: unknown;
+        a?: unknown;
+        rT?: unknown;
+        cS?: unknown;
+        aE?: unknown;
+        rA?: unknown;
+      }
     | undefined
-    | null
+    | null,
 ): ScoreRow | null {
   if (!raw || typeof raw !== "object") return null;
 
@@ -201,11 +214,13 @@ export function deriveScoreRow(
   };
 
   const starRating = Number(
-    ((targetRow.s + targetRow.tE + targetRow.a + targetRow.rT) / 4).toFixed(2)
+    ((targetRow.s + targetRow.tE + targetRow.a + targetRow.rT) / 4).toFixed(2),
   );
-  const competencyRating = Number(
-    ((targetRow.cS + targetRow.aE + targetRow.rA) / 3).toFixed(2)
-  );
+  // check-tag-track.ts's D-73 parity guard compares this expression with its
+  // twin as source text, so a formatter that wraps one site and not the other
+  // breaks the build. Both are pinned to one line.
+  // prettier-ignore
+  const competencyRating = Number(((targetRow.cS + targetRow.aE + targetRow.rA) / 3).toFixed(2));
 
   return {
     questionDescription,

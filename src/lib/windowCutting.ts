@@ -93,7 +93,13 @@ export function mergeSubFloorSpans(spans: TagSpan[], floorMs: number): TagSpan[]
   const isSubFloor = (span: TagSpan) => span.endMs - span.startMs < floorMs;
 
   if (spans.every(isSubFloor)) {
-    return [{ startMs: spans[0].startMs, endMs: spans[spans.length - 1].endMs, speaker: spans[0].speaker }];
+    return [
+      {
+        startMs: spans[0].startMs,
+        endMs: spans[spans.length - 1].endMs,
+        speaker: spans[0].speaker,
+      },
+    ];
   }
 
   const merged: TagSpan[] = [];
@@ -138,7 +144,11 @@ export function mergeSubFloorSpans(spans: TagSpan[], floorMs: number): TagSpan[]
  * absorbed by extending the previous window rather than emitted as its own
  * tiny window. Every window carries the parent span's speaker.
  */
-export function subdivideSpan(span: TagSpan, maxWindowMs: number, overlapMs: number): TranscriptWindow[] {
+export function subdivideSpan(
+  span: TagSpan,
+  maxWindowMs: number,
+  overlapMs: number,
+): TranscriptWindow[] {
   const totalMs = span.endMs - span.startMs;
   if (totalMs <= maxWindowMs) {
     return [{ startMs: span.startMs, endMs: span.endMs, speaker: span.speaker }];
@@ -175,7 +185,7 @@ export function planWindows(
   spans: TagSpan[],
   floorMs: number,
   maxWindowMs: number,
-  overlapMs: number
+  overlapMs: number,
 ): TranscriptWindow[] {
   const merged = mergeSubFloorSpans(spans, floorMs);
   const windows: TranscriptWindow[] = [];
@@ -216,7 +226,7 @@ export function eligibleWindows(
   floorMs: number,
   maxWindowMs: number,
   overlapMs: number,
-  final: boolean
+  final: boolean,
 ): TranscriptWindow[] {
   const windows = planWindows(spans, floorMs, maxWindowMs, overlapMs);
   return final ? windows : windows.slice(0, Math.max(0, windows.length - 1));
@@ -230,7 +240,7 @@ export function eligibleWindows(
  */
 export function dropSeamDuplicates<T extends { startMs: number; endMs: number }>(
   incoming: T[],
-  previousEndMs: number
+  previousEndMs: number,
 ): T[] {
   return incoming.filter((item) => (item.startMs + item.endMs) / 2 >= previousEndMs);
 }

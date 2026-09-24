@@ -1,6 +1,14 @@
 import React, { useState } from "react";
-import { Sparkles, RefreshCw, AlertTriangle, Download, Target, SlidersHorizontal } from "lucide-react";
+import {
+  Sparkles,
+  RefreshCw,
+  AlertTriangle,
+  Download,
+  Target,
+  SlidersHorizontal,
+} from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
+import { toolReadiness } from "../lib/readiness";
 import { CollapsibleSection } from "../components/CollapsibleSection";
 import { FileUploader } from "../components/FileUploader";
 import { downloadText } from "../lib/download";
@@ -109,9 +117,9 @@ const clampPercent = (raw: string): number | null => {
 };
 
 const scoreTone = (p: number) => {
-  if (p >= 70) return { tone: "text-emerald-500", bar: "bg-emerald-500" };
-  if (p >= 40) return { tone: "text-[#fbbf24]", bar: "bg-amber-500" };
-  return { tone: "text-red-500", bar: "bg-red-500" };
+  if (p >= 70) return { tone: "text-good", bar: "bg-good" };
+  if (p >= 40) return { tone: "text-warn", bar: "bg-warn" };
+  return { tone: "text-mark", bar: "bg-mark" };
 };
 
 /** Render a section, styling any [[MMR_START]]…[[MMR_END]] block as a red callout. */
@@ -132,8 +140,8 @@ const renderContent = (text: string) => {
     <div className="flex flex-col gap-4">
       {before.trim() && <RenderMarkdown text={before.trim()} />}
 
-      <div className="border border-red-500/20 bg-red-500/10 rounded-[8px] p-4 md:p-5 flex flex-col gap-3">
-        <div className="flex items-center gap-2 text-red-400 font-display font-semibold text-sm">
+      <div className="border border-mark/20 bg-mark/10 rounded-control p-4 md:p-5 flex flex-col gap-3">
+        <div className="flex items-center gap-2 text-mark font-display font-semibold text-[15px]">
           <AlertTriangle className="w-4 h-4" />
           Mandatory Minimum Requirements
         </div>
@@ -153,13 +161,7 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
   const [customPrompt, setCustomPrompt] = useState("");
   const [customPromptFileName, setCustomPromptFileName] = useState("");
 
-  const lockedReason = !context.resumeText.trim()
-    ? "Add your resume above to run the audit."
-    : !context.jobDescription.trim()
-      ? "Paste the job description above to run the audit."
-      : !apiKey.trim()
-        ? "Connect your API key at the top of the page to run the audit."
-        : null;
+  const lockedReason = toolReadiness(context, apiKey).audit;
 
   const handleAnalyze = async () => {
     setError("");
@@ -201,22 +203,22 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
   return (
     <ToolSection
       id="tool-resume-audit"
-      step="Tool 2"
+      step="03"
+      phase="Assessment"
       title="Resume Audit"
-      subtitle="Your odds of a callback for this job — plus what's working and exactly what to fix"
+      subtitle="Your odds of a callback, and what to fix."
       lockedReason={lockedReason}
     >
       <div className="flex flex-col gap-5">
         <div className="flex flex-col gap-4">
-          <p className="text-xs text-[#9aa3b0] leading-relaxed max-w-2xl">
-            Your resume is scored against this specific job description. The first three tabs
-            answer the questions that matter; the remaining ten hold the full report.
+          <p className="text-[15px] text-ink-soft leading-relaxed measure">
+            The first three tabs answer the questions that matter. The rest is the full report.
           </p>
 
           <button
             onClick={handleAnalyze}
             disabled={isAnalyzing}
-            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+            className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isAnalyzing ? (
               <>
@@ -250,18 +252,18 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
         </div>
 
         {error && (
-          <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
+          <div className="p-3 bg-mark/10 text-mark border border-mark/15 rounded-control text-[15px] flex items-center gap-2 font-medium">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {report && (
-          <div className="flex flex-col gap-5 border-t border-[rgba(255,255,255,0.07)] pt-5">
+          <div className="flex flex-col gap-5 border-t border-rule pt-5">
             {/* Headline callback score */}
             {callbackPercent !== null && (
-              <div className="bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-5 flex flex-col gap-3">
-                <span className="text-[10px] font-bold text-[#6b7685] uppercase tracking-wider">
+              <div className="bg-sunken border border-rule rounded-control p-5 flex flex-col gap-3">
+                <span className="text-xs font-bold text-ink-muted tracking-wider">
                   Callback likelihood for this role
                 </span>
                 <div className="flex items-baseline gap-2">
@@ -271,7 +273,7 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
                     {callbackPercent}%
                   </span>
                 </div>
-                <div className="w-full bg-[#161a1e] h-2 rounded-full overflow-hidden">
+                <div className="w-full bg-surface h-2 rounded-full overflow-hidden">
                   <div
                     className={`h-full transition-all duration-700 rounded-full ${scoreTone(callbackPercent).bar}`}
                     style={{ width: `${callbackPercent}%` }}
@@ -290,12 +292,12 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
                     <button
                       key={section.tabName}
                       onClick={() => setActiveTab(section.tabName)}
-                      className={`px-3 py-1.5 rounded-[5px] text-[11px] font-semibold tracking-wide transition-all border ${
+                      className={`px-3 py-1.5 rounded-control text-[13px] font-semibold tracking-wide transition-all border ${
                         isActive
-                          ? "bg-[#00d4dc] text-[#0a0c0d] border-[#00d4dc] font-bold"
+                          ? "bg-solid text-solid-ink border-solid font-medium"
                           : isHeadline
-                            ? "text-[#00d4dc] border-[rgba(0,212,220,0.25)] bg-[rgba(0,212,220,0.06)] hover:bg-[rgba(0,212,220,0.12)]"
-                            : "text-[#9aa3b0] border-[rgba(255,255,255,0.07)] hover:text-[#eef0f3] hover:bg-[#1c2128]"
+                            ? "text-accent border-accent/30 bg-accent/5 hover:bg-accent/15"
+                            : "text-ink-soft border-rule hover:text-ink hover:bg-sunken"
                       }`}
                     >
                       {section.tabName}
@@ -304,18 +306,16 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
                 })}
               </div>
 
-              <div className="bg-[#1c2128] rounded-[8px] p-5 md:p-6 border border-[rgba(255,255,255,0.07)] min-h-[180px]">
+              <div className="bg-sunken rounded-control p-5 md:p-6 border border-rule min-h-[180px]">
                 {activeSection && renderContent(activeSection.content)}
               </div>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-[10px] text-[#6b7685] font-mono">
-                Model: {report.modelUsed}
-              </span>
+              <span className="text-xs text-ink-muted font-mono">Model: {report.modelUsed}</span>
               <button
                 onClick={() => downloadText("resume-audit.txt", report.body)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[5px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] text-xs font-semibold transition-all active:scale-95"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-control bg-accent/10 hover:bg-accent/15 border border-accent/30 text-accent text-[15px] font-semibold transition-all"
               >
                 <Download className="w-3.5 h-3.5" />
                 Download full report
@@ -325,7 +325,7 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
         )}
 
         {!report && !isAnalyzing && (
-          <p className="text-[11px] text-[#6b7685] flex items-center gap-1.5">
+          <p className="text-[13px] text-ink-muted flex items-center gap-1.5">
             <Sparkles className="w-3 h-3" />
             Results appear here once the audit runs.
           </p>

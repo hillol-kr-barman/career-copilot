@@ -59,32 +59,29 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
   };
 
   return (
-    <section className="w-full rounded-[10px] border border-[rgba(255,255,255,0.07)] bg-[#161a1e] px-5 py-4 md:px-7 flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
-      <div className="flex items-start gap-3 min-w-0">
-        <span className="p-2 rounded-[6px] bg-[#1c2128] border border-[rgba(255,255,255,0.07)] text-[#6b7685] shrink-0">
-          <HardDrive className="w-4 h-4" />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-xs font-semibold text-[#eef0f3]">Stored on this device</h2>
-          <p className="text-[11px] text-[#6b7685] leading-relaxed mt-0.5">
-            {summary
-              ? `This browser is holding ${summary} so a refresh doesn't lose your work. Nothing is sent to or kept on the server.`
-              : "Nothing is stored right now. Anything you add is kept in this browser only — never on the server."}
-          </p>
-        </div>
+    // A footnote to the sheet, not another card: this is housekeeping about
+    // the page rather than part of the work on it.
+    <section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+      <div className="flex min-w-0 items-start gap-2.5">
+        <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-ink-muted" />
+        <p className="measure text-sm leading-relaxed text-ink-muted">
+          {summary
+            ? `Held in this browser so a refresh doesn't lose your work: ${summary}.`
+            : "Nothing stored right now. Anything you add stays in this browser."}
+        </p>
       </div>
 
       <div className="shrink-0 sm:text-right">
         {clearIncomplete ? (
           <span
             role="status"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-400"
+            className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-warn"
           >
             <AlertTriangle className="w-3.5 h-3.5" />
             Some of it is still here — close any other tabs running this app, then try again.
           </span>
         ) : justCleared ? (
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-500">
+          <span className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-good">
             <Check className="w-3.5 h-3.5" />
             Cleared
           </span>
@@ -92,14 +89,14 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={handleClear}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[5px] bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-xs font-semibold transition-all active:scale-95"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control bg-mark/10 hover:bg-mark/20 border border-mark/30 text-mark text-[15px] font-semibold transition-all"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Yes, clear everything
             </button>
             <button
               onClick={() => setIsConfirming(false)}
-              className="px-3 py-2 rounded-[5px] border border-[rgba(255,255,255,0.07)] text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] text-xs font-semibold transition-all active:scale-95"
+              className="px-3 py-2 rounded-control border border-rule text-ink-soft hover:text-ink hover:bg-sunken text-[15px] font-semibold transition-all"
             >
               Cancel
             </button>
@@ -111,7 +108,7 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
               setIsConfirming(true);
             }}
             disabled={stored.length === 0}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[5px] border border-[rgba(255,255,255,0.07)] text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#1c2128] text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control border border-rule text-ink-soft hover:text-ink hover:bg-sunken text-[15px] font-semibold transition-all disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
           >
             <Trash2 className="w-3.5 h-3.5" />
             Clear stored data

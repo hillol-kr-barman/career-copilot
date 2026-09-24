@@ -1,8 +1,26 @@
 <!doctype html>
-<html lang="en">
+<!-- data-theme is set statically to the default so the first paint is already
+     on the right ground. main.tsx re-applies the real theme on mount and
+     switches this to "light" when a stored choice says so; the swap happens
+     before render, so a light-preferring visitor never sees dark either.
+     A static attribute rather than an inline bootstrap script because the
+     production CSP sets scriptSrc to 'self' with no 'unsafe-inline'. -->
+<html lang="en" data-theme="dark" style="color-scheme: dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Four checks over one resume before your interview: whether it reads as AI-written, your odds of a callback for a specific job, the questions you'll be asked, and live feedback while you practise."
+    />
+    <!-- An SVG favicon so the mark stays sharp at any density, and carries its
+         own prefers-color-scheme rule so it takes the light accent on a light
+         tab strip and the dark accent on a dark one. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Paints the browser chrome to match the page ground. Dark is the
+         default, so this carries the dark --ground; main.tsx owns the theme
+         and swaps this to the light value when a stored choice says light. -->
+    <meta name="theme-color" content="#0b0e14" />
     <title>Career Copilot</title>
   </head>
   <body>
@@ -10,4 +28,3 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

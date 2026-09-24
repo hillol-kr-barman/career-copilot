@@ -73,7 +73,9 @@ export const BY_SESSION_INDEX = "bySession";
  * `"blocked"` outcome `deleteRecordingDB` reports while a take is genuinely
  * still in progress.
  */
-export function openRecordingDB(options?: { autoCloseOnVersionChange?: boolean }): Promise<IDBDatabase> {
+export function openRecordingDB(options?: {
+  autoCloseOnVersionChange?: boolean;
+}): Promise<IDBDatabase> {
   const autoCloseOnVersionChange = options?.autoCloseOnVersionChange ?? true;
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -105,7 +107,9 @@ export function openRecordingDB(options?: { autoCloseOnVersionChange?: boolean }
         // creates the new `transcript` store. A v2 take simply has no
         // transcript, which is a state the downloads panel renders
         // honestly rather than a state this upgrade needs to prevent.
-        const transcriptStore = db.createObjectStore(TRANSCRIPT_STORE, { keyPath: ["sessionId", "seq"] });
+        const transcriptStore = db.createObjectStore(TRANSCRIPT_STORE, {
+          keyPath: ["sessionId", "seq"],
+        });
         transcriptStore.createIndex(BY_SESSION_INDEX, "sessionId");
       }
       if (event.oldVersion < 4) {
@@ -166,7 +170,7 @@ export async function createSession(
   db: IDBDatabase,
   session: Omit<RecordingSession, "status" | "durationMs" | "audioDeleted" | "transcriptStatus"> & {
     keepAudio: boolean;
-  }
+  },
 ): Promise<RecordingSession> {
   const record: RecordingSession = {
     ...session,
@@ -191,7 +195,11 @@ export async function createSession(
  * failure rejects with the IndexedDB-quota copy from the UI-SPEC
  * Copywriting Contract while leaving chunks already written untouched.
  */
-export async function appendChunk(db: IDBDatabase, meta: AudioChunkMeta, blob: Blob): Promise<void> {
+export async function appendChunk(
+  db: IDBDatabase,
+  meta: AudioChunkMeta,
+  blob: Blob,
+): Promise<void> {
   const record: AudioChunkRecord = { ...meta, blob };
   return new Promise((resolve, reject) => {
     const tx = db.transaction(CHUNKS_STORE, "readwrite");
@@ -202,9 +210,9 @@ export async function appendChunk(db: IDBDatabase, meta: AudioChunkMeta, blob: B
       reject(
         isQuotaError
           ? new Error(
-              "This browser ran out of local storage space to save the recording. Free up space or shorten the interview, then try again. Your recording so far has been kept."
+              "This browser ran out of local storage space to save the recording. Free up space or shorten the interview, then try again. Your recording so far has been kept.",
             )
-          : tx.error || new Error("Failed to save a recording chunk.")
+          : tx.error || new Error("Failed to save a recording chunk."),
       );
     };
   });
@@ -332,7 +340,7 @@ export function deriveSpans(presses: TagPress[], finalAudioElapsedMs: number): T
 export async function markSessionStopped(
   db: IDBDatabase,
   sessionId: string,
-  durationMs: number
+  durationMs: number,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SESSIONS_STORE, "readwrite", { durability: "strict" });
@@ -440,7 +448,11 @@ export async function deleteSessionAudio(sessionId: string): Promise<number> {
  * known would give that guarantee up. Uses the same read-modify-write shape
  * `markSessionStopped` uses.
  */
-export async function updateSessionSize(db: IDBDatabase, sessionId: string, sizeBytes: number): Promise<void> {
+export async function updateSessionSize(
+  db: IDBDatabase,
+  sessionId: string,
+  sizeBytes: number,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SESSIONS_STORE, "readwrite");
     const store = tx.objectStore(SESSIONS_STORE);
@@ -465,7 +477,7 @@ export async function updateSessionSize(db: IDBDatabase, sessionId: string, size
 export async function updateSessionTranscriptState(
   db: IDBDatabase,
   sessionId: string,
-  patch: Partial<Pick<RecordingSession, "transcriptStatus" | "keepAudio" | "audioDeleted">>
+  patch: Partial<Pick<RecordingSession, "transcriptStatus" | "keepAudio" | "audioDeleted">>,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SESSIONS_STORE, "readwrite", { durability: "strict" });
@@ -546,7 +558,7 @@ export function recoveredEndMs(chunks: { tsMs: unknown }[]): number {
  */
 export const summariseChunks = (
   readableChunks: AudioChunkMeta[],
-  totalChunkCount: number
+  totalChunkCount: number,
 ): RecordingSummary => {
   let totalBytes = 0;
   for (const chunk of readableChunks) {
@@ -578,7 +590,7 @@ export const summariseChunks = (
  */
 export const assembleSessionBlob = async (
   sessionId: string,
-  mimeType: string
+  mimeType: string,
 ): Promise<{ blob: Blob | null; summary: RecordingSummary; unreadableCount: number }> => {
   try {
     const db = await openRecordingDB();
@@ -601,8 +613,14 @@ export const assembleSessionBlob = async (
     db.close();
 
     const sorted = rawRecords.slice().sort((a, b) => {
-      const seqA = typeof (a as { seq?: unknown })?.seq === "number" ? (a as { seq: number }).seq : Number.MAX_SAFE_INTEGER;
-      const seqB = typeof (b as { seq?: unknown })?.seq === "number" ? (b as { seq: number }).seq : Number.MAX_SAFE_INTEGER;
+      const seqA =
+        typeof (a as { seq?: unknown })?.seq === "number"
+          ? (a as { seq: number }).seq
+          : Number.MAX_SAFE_INTEGER;
+      const seqB =
+        typeof (b as { seq?: unknown })?.seq === "number"
+          ? (b as { seq: number }).seq
+          : Number.MAX_SAFE_INTEGER;
       return seqA - seqB;
     });
 
@@ -734,8 +752,8 @@ export const hasStoredRecordings = async (): Promise<boolean> => {
             const req = tx.objectStore(storeName).count();
             req.onsuccess = () => resolve(req.result);
             req.onerror = () => reject(req.error);
-          })
-      )
+          }),
+      ),
     );
     db.close();
     return counts.some((count) => count > 0);
@@ -765,7 +783,12 @@ export interface ResumableSessionInfo {
   lastSpeaker: Speaker | null;
 }
 
-const KNOWN_TRANSCRIPT_STATUSES: readonly TranscriptStatus[] = ["none", "running", "complete", "incomplete"];
+const KNOWN_TRANSCRIPT_STATUSES: readonly TranscriptStatus[] = [
+  "none",
+  "running",
+  "complete",
+  "incomplete",
+];
 
 /**
  * Session records read back from storage are input, not trusted internal
@@ -796,7 +819,8 @@ export const normaliseSessionRecord = (value: unknown): RecordingSession | null 
   if (typeof record.mimeType !== "string" || record.mimeType.length === 0) return null;
   if (typeof record.declaredSpeaker !== "string") return null;
 
-  const declaredSpeaker: Speaker = record.declaredSpeaker === "interviewer" ? "interviewer" : "candidate";
+  const declaredSpeaker: Speaker =
+    record.declaredSpeaker === "interviewer" ? "interviewer" : "candidate";
   const startedAt = typeof record.startedAt === "number" ? record.startedAt : 0;
   const status = record.status === "stopped" ? "stopped" : "recording";
   const durationMs = typeof record.durationMs === "number" ? record.durationMs : 0;
@@ -1003,7 +1027,7 @@ const deleteSessionAndChunks = (db: IDBDatabase, sessionId: string): Promise<voi
   new Promise((resolve, reject) => {
     const tx = db.transaction(
       [SESSIONS_STORE, CHUNKS_STORE, TAGS_STORE, TRANSCRIPT_STORE, DOCUMENTS_STORE],
-      "readwrite"
+      "readwrite",
     );
     tx.objectStore(SESSIONS_STORE).delete(sessionId);
     tx.objectStore(DOCUMENTS_STORE).delete(sessionId);
@@ -1068,7 +1092,10 @@ export const pruneOlderSessions = async (keepSessionId: string): Promise<void> =
 
     const staleRecordingIds = rawSessions
       .map(normaliseSessionRecord)
-      .filter((s): s is RecordingSession => s !== null && s.status === "recording" && s.sessionId !== keepSessionId)
+      .filter(
+        (s): s is RecordingSession =>
+          s !== null && s.status === "recording" && s.sessionId !== keepSessionId,
+      )
       .map((s) => s.sessionId);
 
     for (const id of staleRecordingIds) {

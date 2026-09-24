@@ -1,46 +1,252 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+/* Self-hosted so the production CSP (defaultSrc 'self', styleSrc without
+   fonts.googleapis.com) can actually serve them. A remote @import is blocked
+   in production and falls back silently to system sans. */
+@import "@fontsource-variable/schibsted-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
 @import "tailwindcss";
 
-@theme {
-  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Space Grotesk", sans-serif;
-  --font-mono: "DM Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+/* Dark mode is an explicit user choice stored on <html data-theme>, not a
+   media query: the toggle has to win in both directions, including for a
+   reader whose OS is dark but who wants the light. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ── Palette ──────────────────────────────────────────────────────────────
+   Neutral slate grounds with a single blue-violet accent.
+
+   Violet rather than a green earns its place: with an emerald accent the
+   accent and the success colour were the same swatch, so "this worked" and
+   "this is interactive" looked identical. Moving the accent off green hands
+   green, amber and red back to meaning success, warning and error.
+
+   One colour in two cuts — #4a37c8 on light (7.7:1) and #a99cff on dark
+   (8.2:1). Both read as the same violet. */
+:root {
+  --ground: #fcfcfd;
+  --surface: #ffffff;
+  --sunken: #f4f5f7;
+  --ink: #101828;
+  --ink-soft: #545c6b;
+  --ink-muted: #858d9c;
+  --rule: rgba(16, 24, 40, 0.1);
+  --rule-strong: rgba(16, 24, 40, 0.18);
+  --accent: #4a37c8;
+  --accent-ink: #ffffff;
+  --accent-wash: rgba(74, 55, 200, 0.07);
+  --accent-edge: rgba(74, 55, 200, 0.24);
+  /* Filled controls are neutral, not accent: the accent is spent on signal —
+     the active step, a link, a live status — so that seeing it always means
+     something rather than just meaning "a button". */
+  --solid: #101828;
+  --solid-ink: #ffffff;
+  --good: #047857;
+  --good-wash: rgba(4, 120, 87, 0.08);
+  --warn: #b45309;
+  --warn-wash: rgba(180, 83, 9, 0.09);
+  --mark: #b42318;
+  --mark-wash: rgba(180, 35, 24, 0.08);
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 10px 28px -14px rgba(16, 24, 40, 0.14);
 }
 
-body {
-  background: #0e1012;
-  color: #eef0f3;
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
+[data-theme="dark"] {
+  --ground: #0b0e14;
+  --surface: #11151d;
+  --sunken: #171c26;
+  --ink: #e6e8ec;
+  --ink-soft: #99a1b0;
+  --ink-muted: #6b7484;
+  --rule: rgba(255, 255, 255, 0.09);
+  --rule-strong: rgba(255, 255, 255, 0.17);
+  --accent: #a99cff;
+  --accent-ink: #0b0e14;
+  --accent-wash: rgba(169, 156, 255, 0.11);
+  --accent-edge: rgba(169, 156, 255, 0.3);
+  --solid: #e6e8ec;
+  --solid-ink: #0b0e14;
+  --good: #34d399;
+  --good-wash: rgba(52, 211, 153, 0.11);
+  --warn: #fbbf24;
+  --warn-wash: rgba(251, 191, 36, 0.11);
+  --mark: #f97066;
+  --mark-wash: rgba(249, 112, 102, 0.11);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px -14px rgba(0, 0, 0, 0.7);
 }
 
-h1, h2, h3, h4, .font-display {
-  font-family: var(--font-display);
-  letter-spacing: -0.02em;
+/* `inline` keeps the utilities pointing at the live custom properties, so a
+   theme flip repaints without rebuilding any classes. */
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-muted: var(--ink-muted);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-wash: var(--accent-wash);
+  --color-accent-edge: var(--accent-edge);
+  --color-solid: var(--solid);
+  --color-solid-ink: var(--solid-ink);
+  --color-good: var(--good);
+  --color-good-wash: var(--good-wash);
+  --color-warn: var(--warn);
+  --color-warn-wash: var(--warn-wash);
+  --color-mark: var(--mark);
+  --color-mark-wash: var(--mark-wash);
+
+  --font-sans: "Schibsted Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Squarer than the reference's soft 8/12. A tighter radius reads as
+     precision, which is the register this tool wants. */
+  --radius-card: 8px;
+  --radius-control: 5px;
+
+  --shadow-card: var(--shadow-card);
 }
 
-.font-mono {
-  font-family: var(--font-mono);
-}
+/* ── Base ─────────────────────────────────────────────────────────────── */
 
-/* Custom scrollbars */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 99px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
-}
-
-/* Scroll support container alignment */
 html {
   scroll-behavior: smooth;
   overflow-y: scroll;
+  background: var(--ground);
+}
+
+body {
+  background: var(--ground);
+  color: var(--ink-soft);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Display type: set tight and dark, so a heading lands as a statement against
+   the small mono apparatus around it. The tracking eases off as size drops —
+   what looks decisive at 44px crashes together at 18px. */
+h1,
+h2,
+h3,
+h4 {
+  color: var(--ink);
+  font-weight: 600;
+  line-height: 1.14;
+  letter-spacing: -0.024em;
+  text-wrap: balance;
+}
+
+h3,
+h4 {
+  letter-spacing: -0.012em;
+}
+
+.display {
+  font-weight: 600;
+  letter-spacing: -0.034em;
+  line-height: 1.05;
+  color: var(--ink);
+}
+
+/* Small mono apparatus — field labels and the like. Sentence case with light
+   tracking rather than tracked-out caps: caps shout, and every one of these
+   sits beside something that matters more. */
+.label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--ink-muted);
+}
+
+.measure {
+  max-width: 68ch;
+}
+
+/* Tabular figures for anything that changes in place — timers, counts,
+   percentages — so digits don't jitter as they tick. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────── */
+
+::placeholder {
+  color: var(--ink-muted);
+  opacity: 1;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────── */
+
+* {
+  scrollbar-color: var(--rule-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--rule-strong);
+  border: 3px solid var(--ground);
+  border-radius: 99px;
+}
+
+/* Setting overflow on one axis makes the other compute from `visible` to
+   `auto`, so a horizontally scrolling strip sprouts a stray vertical
+   scrollbar the moment its content is a fraction taller than its box. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── Motion ───────────────────────────────────────────────────────────── */
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.pulse-dot {
+  animation: pulse-dot 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

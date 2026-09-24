@@ -48,17 +48,17 @@ const CHIP_LABEL: Record<ChipState, string> = {
 };
 
 const CHIP_CLASSES: Record<ChipState, string> = {
-  healthy: "text-emerald-500 bg-emerald-500/10 border-emerald-500/20",
-  missing: "text-red-500 bg-red-500/10 border-red-500/15",
-  silent: "text-amber-400 bg-amber-500/10 border-amber-500/20",
-  waiting: "text-[#9aa3b0] bg-[#161a1e] border-[rgba(255,255,255,0.07)]",
+  healthy: "text-good bg-good/10 border-good/20",
+  missing: "text-mark bg-mark/10 border-mark/15",
+  silent: "text-warn bg-warn/10 border-warn/20",
+  waiting: "text-ink-soft bg-surface border-rule",
 };
 
 const BAR_FILL: Record<ChipState, string> = {
-  healthy: "bg-emerald-500",
-  missing: "bg-red-500",
-  silent: "bg-amber-500",
-  waiting: "bg-[#6b7685]",
+  healthy: "bg-good",
+  missing: "bg-mark",
+  silent: "bg-warn",
+  waiting: "bg-ink-muted",
 };
 
 const CHIP_ICON: Record<ChipState, React.ComponentType<{ className?: string }>> = {
@@ -179,15 +179,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     prevSpeakerRef.current = speaker;
   }, [speaker]);
 
-  const showMeter = streamReady && (status === "armed" || status === "recording" || status === "paused");
+  const showMeter =
+    streamReady && (status === "armed" || status === "recording" || status === "paused");
 
   // D-37: informs, never blocks — Begin stays enabled in every case below.
   // A warning about the room is not a permission.
-  const preflightReadinessLine = preflightCleared.interviewer && preflightCleared.candidate
-    ? "Pre-flight: both sides cleared."
-    : preflightCleared.interviewer || preflightCleared.candidate
-      ? `Pre-flight: ${preflightCleared.interviewer ? SPEAKER_LABEL.candidate : SPEAKER_LABEL.interviewer} hasn't cleared yet.`
-      : "Pre-flight: not checked yet.";
+  const preflightReadinessLine =
+    preflightCleared.interviewer && preflightCleared.candidate
+      ? "Pre-flight: both sides cleared."
+      : preflightCleared.interviewer || preflightCleared.candidate
+        ? `Pre-flight: ${preflightCleared.interviewer ? SPEAKER_LABEL.candidate : SPEAKER_LABEL.interviewer} hasn't cleared yet.`
+        : "Pre-flight: not checked yet.";
 
   return (
     <div className="flex flex-col gap-4">
@@ -201,18 +203,20 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           {warnings.map((warning) => (
             <div
               key={warning.id}
-              className="flex items-start gap-2.5 bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-4"
+              className="flex items-start gap-2.5 bg-sunken border border-rule rounded-control p-4"
             >
-              <div className="p-1.5 rounded-[6px] shrink-0 border bg-amber-500/10 border-amber-500/20 text-amber-400">
+              <div className="p-1.5 rounded-control shrink-0 border bg-warn/10 border-warn/20 text-warn">
                 <AlertTriangle className="w-4 h-4" />
               </div>
-              <p className="text-xs text-[#9aa3b0] leading-relaxed flex-1">{warning.message}</p>
+              <p className="text-[15px] text-ink-soft leading-relaxed flex-1 measure">
+                {warning.message}
+              </p>
               {warning.onDismiss && (
                 <button
                   type="button"
                   onClick={warning.onDismiss}
                   aria-label="Dismiss notice"
-                  className="text-[#6b7685] hover:text-[#eef0f3] shrink-0 p-0.5"
+                  className="text-ink-muted hover:text-ink shrink-0 p-0.5"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -224,15 +228,15 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
       {status === "idle" && (
         <div className="flex flex-col gap-2">
-          <h3 className="text-sm font-semibold text-[#eef0f3]">No recording yet</h3>
-          <p className="text-xs text-[#9aa3b0] leading-relaxed">
-            Record both people in the room through one microphone. Nothing leaves this browser.
-            Accept the notice below to begin.
+          <h3 className="text-[15px] font-semibold text-ink">No recording yet</h3>
+          <p className="text-[15px] text-ink-soft leading-relaxed measure">
+            Both people through one microphone. Nothing leaves this browser. Accept the notice below
+            to begin.
           </p>
           <button
             ref={connectButtonRef}
             onClick={onConnect}
-            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50 mt-2"
+            className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40 mt-2"
           >
             <span>Connect microphone</span>
           </button>
@@ -242,7 +246,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       {status === "connecting" && (
         <button
           disabled
-          className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] disabled:opacity-50"
+          className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <RefreshCw className="w-4 h-4 animate-spin" />
           <span>Connecting to microphone…</span>
@@ -253,10 +257,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
       {status === "armed" && (
         <div className="flex flex-col gap-2">
-          <p className="text-xs text-[#9aa3b0] text-center leading-relaxed">{preflightReadinessLine}</p>
+          <p className="text-[15px] text-ink-soft text-center leading-relaxed measure">
+            {preflightReadinessLine}
+          </p>
           <button
             onClick={onBegin}
-            className="w-full inline-flex items-center justify-center gap-2.5 bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all disabled:opacity-50"
+            className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Circle className="w-4 h-4" />
             <span>Begin recording</span>
@@ -283,19 +289,21 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               about recording, never a dismissible notice about something
               that has already gone wrong (contrast the `warnings` block
               above, which only ever names conditions that have arisen). */}
-          <p className="text-[11px] text-[#6b7685] text-center leading-relaxed -mt-1">{TAB_FOCUS_ADVISORY}</p>
+          <p className="text-[13px] text-ink-muted text-center leading-relaxed -mt-1 measure">
+            {TAB_FOCUS_ADVISORY}
+          </p>
 
-          <div className="w-full bg-[#1c2128] border border-[rgba(255,255,255,0.07)] p-5 rounded-[8px] flex flex-col items-center justify-center gap-2">
-            <span className="text-4xl font-extrabold font-mono text-[#eef0f3] tracking-tight">
+          <div className="w-full bg-sunken border border-rule p-5 rounded-control flex flex-col items-center justify-center gap-2">
+            <span className="text-4xl font-extrabold font-mono text-ink tracking-tight">
               {formatElapsed(elapsedMs)}
             </span>
             {status === "recording" ? (
-              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-500">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-mark">
+                <span className="w-2 h-2 rounded-full bg-mark animate-pulse" />
                 Recording
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-400">
+              <span className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-warn">
                 <PauseCircle className="w-3.5 h-3.5" />
                 Paused
               </span>
@@ -306,7 +314,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             {status === "recording" ? (
               <button
                 onClick={onPause}
-                className="inline-flex items-center justify-center gap-2 bg-[#1c2128] hover:bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.07)] text-[#eef0f3] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all"
+                className="inline-flex items-center justify-center gap-2 bg-sunken hover:bg-ink/5 border border-rule text-ink font-semibold text-[15px] tracking-wide py-4 px-4 rounded-control transition-all"
               >
                 <PauseCircle className="w-4 h-4" />
                 <span>Pause</span>
@@ -314,7 +322,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             ) : (
               <button
                 onClick={onResume}
-                className="inline-flex items-center justify-center gap-2 bg-[#1c2128] hover:bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.07)] text-[#eef0f3] font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all"
+                className="inline-flex items-center justify-center gap-2 bg-sunken hover:bg-ink/5 border border-rule text-ink font-semibold text-[15px] tracking-wide py-4 px-4 rounded-control transition-all"
               >
                 <Circle className="w-4 h-4" />
                 <span>Resume</span>
@@ -322,7 +330,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             )}
             <button
               onClick={onStop}
-              className="inline-flex items-center justify-center gap-2 bg-red-500 hover:opacity-90 text-white font-semibold text-sm uppercase tracking-widest py-4 px-4 rounded-[6px] active:scale-[0.99] transition-all"
+              className="inline-flex items-center justify-center gap-2 bg-mark hover:opacity-90 text-white font-semibold text-[15px] tracking-wide py-4 px-4 rounded-control transition-all"
             >
               <Square className="w-4 h-4" />
               <span>Stop recording</span>
@@ -333,7 +341,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
       {status === "stopped" && (
         <div className="text-center py-1">
-          <p className="text-sm font-semibold text-[#eef0f3]">
+          <p className="text-[15px] font-semibold text-ink">
             Recording complete — {formatElapsed(elapsedMs)}
           </p>
         </div>
@@ -356,11 +364,9 @@ const MeterRow: React.FC<MeterRowProps> = ({ state, level, hasMeter }) => {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
-          ROOM MICROPHONE
-        </span>
+        <span className="label">ROOM MICROPHONE</span>
         <span
-          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[4px] border text-[10px] font-semibold shrink-0 ${CHIP_CLASSES[state]}`}
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[3px] border text-xs font-semibold shrink-0 ${CHIP_CLASSES[state]}`}
         >
           <Icon className={`w-3 h-3 ${state === "waiting" ? "animate-spin" : ""}`} />
           {CHIP_LABEL[state]}
@@ -373,7 +379,7 @@ const MeterRow: React.FC<MeterRowProps> = ({ state, level, hasMeter }) => {
           aria-valuemax={100}
           aria-valuenow={pct}
           aria-label="Microphone audio level"
-          className="w-full bg-[#161a1e] h-2 rounded-full overflow-hidden"
+          className="w-full bg-surface h-2 rounded-full overflow-hidden"
         >
           <div
             className={`h-full transition-all duration-150 rounded-full ${BAR_FILL[state]}`}

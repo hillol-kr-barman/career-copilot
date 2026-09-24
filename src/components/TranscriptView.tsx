@@ -10,7 +10,8 @@ import { SPEAKER_LABEL } from "./SpeakerBanner";
 const formatLagSeconds = (lagMs: number): string => `${Math.max(0, Math.floor(lagMs / 1000))}s`;
 
 /** Rounds a stall duration down to the nearest whole second for display. */
-const formatStallSeconds = (lagMs: number): string => `${Math.max(0, Math.floor(lagMs / 1000))} seconds`;
+const formatStallSeconds = (lagMs: number): string =>
+  `${Math.max(0, Math.floor(lagMs / 1000))} seconds`;
 
 export interface TranscriptViewProps {
   /** Segments grouped into speaker turns (`groupIntoTurns`, D-48's display unit). */
@@ -88,15 +89,16 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
     const containerRect = container.getBoundingClientRect();
     const targetRect = target.getBoundingClientRect();
     const targetTopWithinContainer = targetRect.top - containerRect.top + container.scrollTop;
-    container.scrollTop = targetTopWithinContainer - container.clientHeight / 2 + target.clientHeight / 2;
+    container.scrollTop =
+      targetTopWithinContainer - container.clientHeight / 2 + target.clientHeight / 2;
   }, [highlightSeq, isRecording]);
 
   return (
-    <div className="flex flex-col gap-3 rounded-[8px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] p-4">
+    <div className="flex flex-col gap-3 rounded-control border border-rule bg-sunken p-4">
       <StatusLine status={status} realtimeFactor={realtimeFactor} />
 
       {skippedCount > 0 && (
-        <div className="flex items-center gap-2 text-xs text-amber-400">
+        <div className="flex items-center gap-2 text-[15px] text-warn">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
           <span>
             {skippedCount === 1
@@ -111,14 +113,13 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
           only ever true once the take is stopped (D-51), so this can never
           appear next to a live, still-appending transcript. */}
       {canCorrect && turns.length > 0 && (
-        <p className="text-[11px] text-[#6b7685] leading-relaxed">
-          Click a line to say the speaker changes there — the lines above it rejoin the other speaker's turn.
-          Click a turn's first line to undo the change entirely.
+        <p className="text-[13px] text-ink-muted leading-relaxed measure">
+          Click a line to move the speaker change there. Click a turn's first line to undo it.
         </p>
       )}
 
       {turns.length === 0 ? (
-        <p className="text-xs text-[#9aa3b0] leading-relaxed">
+        <p className="text-[15px] text-ink-soft leading-relaxed measure">
           {isRecording
             ? "Lines appear here as each speaker finishes a turn."
             : "This take has no transcript."}
@@ -132,7 +133,11 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
             // the rule `moveTurnBoundary` itself applies, computed here only
             // to word the per-line control honestly.
             const previousSpeaker: Speaker =
-              index > 0 ? turns[index - 1].speaker : turn.speaker === "candidate" ? "interviewer" : "candidate";
+              index > 0
+                ? turns[index - 1].speaker
+                : turn.speaker === "candidate"
+                  ? "interviewer"
+                  : "candidate";
             return (
               <TranscriptTurnRow
                 key={`${turn.startMs}-${index}`}
@@ -167,7 +172,10 @@ interface StatusLineProps {
  * (benchmark failed or not yet run) or the machine is expected to keep up in
  * real time, in which case the bare lag figure already says enough.
  */
-function describeLiveLagExpectation(lagMs: number, realtimeFactor: number | undefined): string | null {
+function describeLiveLagExpectation(
+  lagMs: number,
+  realtimeFactor: number | undefined,
+): string | null {
   if (realtimeFactor === undefined || realtimeFactor <= 1) return null;
   const expectedLagMs = MAX_WINDOW_MS * realtimeFactor;
   return lagMs > expectedLagMs * 2
@@ -182,7 +190,8 @@ const StatusLine: React.FC<StatusLineProps> = ({ status, realtimeFactor }) => {
   let text: string;
   switch (status.phase) {
     case "loading":
-      text = "Loading the transcription model — audio is being held and will be transcribed once it's ready.";
+      text =
+        "Loading the transcription model — audio is being held and will be transcribed once it's ready.";
       break;
     case "live": {
       text = `Transcript is ~${formatLagSeconds(status.lagMs)} behind.`;
@@ -212,8 +221,8 @@ const StatusLine: React.FC<StatusLineProps> = ({ status, realtimeFactor }) => {
   return (
     <div className="flex flex-col gap-1">
       <div
-        className={`flex items-center gap-2 text-xs font-semibold ${
-          isFailed ? "text-red-400" : isStalled ? "text-amber-400" : "text-[#9aa3b0]"
+        className={`flex items-center gap-2 text-[15px] font-semibold ${
+          isFailed ? "text-mark" : isStalled ? "text-warn" : "text-ink-soft"
         }`}
       >
         {status.phase === "loading" && <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin" />}
@@ -221,8 +230,9 @@ const StatusLine: React.FC<StatusLineProps> = ({ status, realtimeFactor }) => {
         <span>{text}</span>
       </div>
       {status.backlogDroppedMs > 0 && (
-        <span className="text-[11px] text-amber-400">
-          {Math.round(status.backlogDroppedMs / 1000)}s of audio could not be held while the model loaded.
+        <span className="text-[13px] text-warn">
+          {Math.round(status.backlogDroppedMs / 1000)}s of audio could not be held while the model
+          loaded.
         </span>
       )}
     </div>
@@ -265,11 +275,13 @@ const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex items-baseline gap-2">
-        <span className="text-[11px] font-mono text-[#6b7685] shrink-0">{formatElapsed(turn.startMs)}</span>
-        <span className="text-xs font-semibold text-[#eef0f3]">{SPEAKER_LABEL[turn.speaker]}</span>
+        <span className="text-[13px] font-mono text-ink-muted shrink-0">
+          {formatElapsed(turn.startMs)}
+        </span>
+        <span className="text-[15px] font-semibold text-ink">{SPEAKER_LABEL[turn.speaker]}</span>
         {turn.corrected && (
           <span
-            className="text-[10px] font-semibold uppercase tracking-wide text-amber-400"
+            className="text-xs font-semibold tracking-wide text-warn"
             title="This turn's speaker label was corrected after the take — the recorded tag track and its downloaded sidecar are unchanged"
           >
             Corrected
@@ -292,10 +304,8 @@ const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({
                 data-segment-seq={segment.seq}
                 onClick={() => onMoveBoundary(segment.seq)}
                 title={`Speaker changes here — the lines above become ${SPEAKER_LABEL[previousSpeaker]}`}
-                className={`text-left text-sm text-[#c7ccd4] leading-relaxed rounded-[4px] -mx-1 px-1 border-l-2 transition-colors hover:bg-[rgba(0,212,220,0.08)] hover:text-[#eef0f3] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00d4dc] ${
-                  isHighlighted
-                    ? "border-l-[#00d4dc] bg-[rgba(0,212,220,0.12)] text-[#eef0f3]"
-                    : "border-l-transparent"
+                className={`text-left text-[15px] text-ink-soft leading-relaxed rounded-[3px] -mx-1 px-1 border-l-2 transition-colors hover:bg-accent/10 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+                  isHighlighted ? "border-l-accent bg-accent/15 text-ink" : "border-l-transparent"
                 }`}
               >
                 {segment.text.trim()}
@@ -304,7 +314,7 @@ const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({
           })}
         </div>
       ) : (
-        <p className="text-sm text-[#c7ccd4] leading-relaxed pl-[3.25rem]">
+        <p className="text-[15px] text-ink-soft leading-relaxed pl-[3.25rem] measure">
           {turn.segments.map((segment) => segment.text.trim()).join(" ")}
         </p>
       )}

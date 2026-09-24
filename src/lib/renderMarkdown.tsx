@@ -24,21 +24,21 @@ const renderInline = (text: string): React.ReactNode[] => {
 
     if (match[1] !== undefined) {
       nodes.push(
-        <strong key={key++} className="font-semibold text-[#eef0f3]">
+        <strong key={key++} className="font-semibold text-ink">
           {match[1]}
-        </strong>
+        </strong>,
       );
     } else if (match[2] !== undefined) {
       nodes.push(
         <em key={key++} className="italic">
           {match[2]}
-        </em>
+        </em>,
       );
     } else {
       nodes.push(
-        <code key={key++} className="font-mono text-[11px] text-[#00d4dc]">
+        <code key={key++} className="font-mono text-[13px] text-accent">
           {match[3]}
-        </code>
+        </code>,
       );
     }
     lastIndex = INLINE.lastIndex;
@@ -49,7 +49,7 @@ const renderInline = (text: string): React.ReactNode[] => {
 };
 
 export const RenderMarkdown: React.FC<{ text: string }> = ({ text }) => (
-  <div className="text-sm text-white/80 leading-relaxed font-sans flex flex-col">
+  <div className="text-[15px] text-white/80 leading-relaxed font-sans flex flex-col measure">
     {text.split("\n").map((line, i) => {
       if (!line.trim()) return <div key={i} className="h-3" />;
 
@@ -66,7 +66,7 @@ export const RenderMarkdown: React.FC<{ text: string }> = ({ text }) => (
             isIndented ? "pl-4" : ""
           } ${isNumbered ? "pl-1" : ""}`}
         >
-          {isBullet && <span className="absolute left-0 top-0.5 text-[#00d4dc]">•</span>}
+          {isBullet && <span className="absolute left-0 top-0.5 text-accent">•</span>}
           {renderInline(body)}
         </div>
       );

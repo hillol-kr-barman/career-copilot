@@ -99,6 +99,9 @@ export function findQuoteInSegments(quote: string, segments: TranscriptSegment[]
 export function fingerprintSegments(segments: TranscriptSegment[]): string {
   const sorted = [...segments].sort((a, b) => a.seq - b.seq);
   return sorted
-    .map((segment) => `${segment.seq}:${segment.resolvedSpeaker ?? segment.speaker}:${segment.text.trim()}`)
+    .map(
+      (segment) =>
+        `${segment.seq}:${segment.resolvedSpeaker ?? segment.speaker}:${segment.text.trim()}`,
+    )
     .join("|");
 }

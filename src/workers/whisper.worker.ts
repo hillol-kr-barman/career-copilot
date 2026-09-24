@@ -236,7 +236,13 @@ async function transcribeWindow(request: {
     for (const chunk of rawChunks) {
       const startMs = request.windowStartMs + chunk.timestamp[0] * 1000;
       const endMs = request.windowStartMs + chunk.timestamp[1] * 1000;
-      const chunkPcm = sliceByTime(request.pcm, request.windowStartMs, startMs, endMs, TARGET_SAMPLE_RATE);
+      const chunkPcm = sliceByTime(
+        request.pcm,
+        request.windowStartMs,
+        startMs,
+        endMs,
+        TARGET_SAMPLE_RATE,
+      );
       const chunkPeakRms = peakFrameRms(chunkPcm, TARGET_SAMPLE_RATE, SILENCE_FRAME_MS);
       if (chunkPeakRms < SILENCE_FLOOR_RMS) {
         silentChunks++;
@@ -311,7 +317,10 @@ function synthesizeBenchmarkPcm(): Float32Array {
  */
 async function runBenchmark(): Promise<void> {
   if (!transcriber) {
-    workerScope.postMessage({ type: "error", message: "The transcription model is not loaded yet." });
+    workerScope.postMessage({
+      type: "error",
+      message: "The transcription model is not loaded yet.",
+    });
     return;
   }
   try {

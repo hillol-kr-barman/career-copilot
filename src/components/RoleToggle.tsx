@@ -31,21 +31,19 @@ export const RoleToggle: React.FC<RoleToggleProps> = ({
 }) => {
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-[10px] font-bold uppercase tracking-wider text-[#6b7685]">
-        Your role in this interview
-      </span>
+      <span className="label">Your role in this interview</span>
 
-      <div className="rounded-[6px] border border-[rgba(255,255,255,0.07)] overflow-hidden inline-flex w-fit">
+      <div className="rounded-control border border-rule overflow-hidden inline-flex w-fit">
         <button
           type="button"
           aria-pressed={declaredSpeaker === "candidate"}
           aria-disabled={disabled}
           disabled={disabled}
           onClick={() => onDeclaredSpeakerChange("candidate")}
-          className={`px-4 py-2.5 text-sm transition-all disabled:opacity-50 ${
+          className={`px-4 py-2.5 text-[15px] transition-all disabled:opacity-50 ${
             declaredSpeaker === "candidate"
-              ? "bg-[#00d4dc] text-[#0a0c0d] font-semibold"
-              : "bg-[#1c2128] text-[#9aa3b0] hover:text-[#eef0f3]"
+              ? "bg-solid text-solid-ink font-medium"
+              : "bg-sunken text-ink-soft hover:text-ink"
           }`}
         >
           I'm the candidate
@@ -56,28 +54,26 @@ export const RoleToggle: React.FC<RoleToggleProps> = ({
           aria-disabled={disabled}
           disabled={disabled}
           onClick={() => onDeclaredSpeakerChange("interviewer")}
-          className={`px-4 py-2.5 text-sm transition-all disabled:opacity-50 ${
+          className={`px-4 py-2.5 text-[15px] transition-all disabled:opacity-50 ${
             declaredSpeaker === "interviewer"
-              ? "bg-[#00d4dc] text-[#0a0c0d] font-semibold"
-              : "bg-[#1c2128] text-[#9aa3b0] hover:text-[#eef0f3]"
+              ? "bg-solid text-solid-ink font-medium"
+              : "bg-sunken text-ink-soft hover:text-ink"
           }`}
         >
           I'm the interviewer
         </button>
       </div>
 
-      <p className="text-xs text-[#9aa3b0] leading-relaxed">
-        This is recorded once, before you start — it doesn't change which audio is captured. One
-        microphone records both of you; the spacebar marks who is currently speaking.
+      <p className="text-[15px] text-ink-soft leading-relaxed measure">
+        Set once, before you start. The spacebar marks who is speaking.
       </p>
 
-      <p className="text-xs text-[#6b7685] leading-relaxed">
-        A panel of interviewers shares the one Interviewer side of the spacebar toggle —
-        per-panellist controls aren't available yet.
+      <p className="text-[15px] text-ink-muted leading-relaxed measure">
+        A panel shares the one Interviewer side — per-panellist tagging isn't available yet.
       </p>
 
       {disabled && (
-        <p className="text-xs text-[#6b7685] leading-relaxed">
+        <p className="text-[15px] text-ink-muted leading-relaxed measure">
           Locked while recording — set for the whole session.
         </p>
       )}

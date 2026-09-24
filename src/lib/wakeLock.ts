@@ -48,7 +48,7 @@ export function releaseWakeLock(): void {
  */
 export function installWakeLockReacquire(
   isRecordingActive: () => boolean,
-  onResult: (gotLock: boolean) => void
+  onResult: (gotLock: boolean) => void,
 ): () => void {
   const handler = () => {
     if (document.visibilityState === "visible" && isRecordingActive() && sentinel === null) {

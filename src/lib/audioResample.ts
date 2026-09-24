@@ -73,7 +73,7 @@ export function sliceByTime(
   pcmStartMs: number,
   fromMs: number,
   toMs: number,
-  sampleRate: number = TARGET_SAMPLE_RATE
+  sampleRate: number = TARGET_SAMPLE_RATE,
 ): Float32Array {
   const pcmEndMs = pcmStartMs + (pcm.length / sampleRate) * 1000;
   if (pcm.length === 0 || toMs <= pcmStartMs || fromMs >= pcmEndMs || toMs <= fromMs) {
@@ -83,7 +83,10 @@ export function sliceByTime(
   const clampedFromMs = Math.max(fromMs, pcmStartMs);
   const clampedToMs = Math.min(toMs, pcmEndMs);
   const startIndex = Math.max(0, Math.round(((clampedFromMs - pcmStartMs) / 1000) * sampleRate));
-  const endIndex = Math.min(pcm.length, Math.round(((clampedToMs - pcmStartMs) / 1000) * sampleRate));
+  const endIndex = Math.min(
+    pcm.length,
+    Math.round(((clampedToMs - pcmStartMs) / 1000) * sampleRate),
+  );
   if (endIndex <= startIndex) return new Float32Array(0);
   return pcm.slice(startIndex, endIndex);
 }

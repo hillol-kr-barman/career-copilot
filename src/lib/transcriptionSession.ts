@@ -1,7 +1,13 @@
 import type { Speaker, TagPress, TranscriptSegment } from "../types";
 import { openRecordingDB, deriveSpans, updateSessionTranscriptState } from "./recordingStore";
 import { appendSegment, nextSegmentSeq } from "./transcriptStore";
-import { eligibleWindows, dropSeamDuplicates, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS } from "./windowCutting";
+import {
+  eligibleWindows,
+  dropSeamDuplicates,
+  SPAN_FLOOR_MS,
+  MAX_WINDOW_MS,
+  WINDOW_OVERLAP_MS,
+} from "./windowCutting";
 import { sliceByTime, TARGET_SAMPLE_RATE } from "./audioResample";
 import { createAudioTap } from "./audioTap";
 import type { WhisperRequest, WhisperResponse } from "../workers/whisper.worker";
@@ -112,7 +118,9 @@ export interface WarmupResult {
  * measurement didn't, and a missing measurement is a missing sentence on the
  * reading side, not a broken pre-flight.
  */
-export function warmUpWhisper(onProgress: (loadedBytes: number, totalBytes: number) => void): Promise<WarmupResult> {
+export function warmUpWhisper(
+  onProgress: (loadedBytes: number, totalBytes: number) => void,
+): Promise<WarmupResult> {
   return new Promise((resolve) => {
     const worker = createWorker();
     let settled = false;
@@ -164,7 +172,10 @@ export function warmUpWhisper(onProgress: (loadedBytes: number, totalBytes: numb
       if (readyDevice) {
         finish({ ok: true, device: readyDevice });
       } else {
-        finish({ ok: false, message: "The transcription model sent an unreadable message while loading." });
+        finish({
+          ok: false,
+          message: "The transcription model sent an unreadable message while loading.",
+        });
       }
     };
 
@@ -187,7 +198,7 @@ export function warmUpWhisper(onProgress: (loadedBytes: number, totalBytes: numb
  * session record (D-39's explicit isolation guarantee).
  */
 export async function startTranscriptionSession(
-  options: TranscriptionSessionOptions
+  options: TranscriptionSessionOptions,
 ): Promise<TranscriptionSessionHandle | null> {
   const { sessionId, stream, clock, isResumedTake, onSegment, onStatus } = options;
 
@@ -287,7 +298,7 @@ export async function startTranscriptionSession(
     const buffer = materializeBuffer();
     const dropSamples = Math.min(
       buffer.length,
-      Math.round(((newStartMs - bufferStartMs) / 1000) * TARGET_SAMPLE_RATE)
+      Math.round(((newStartMs - bufferStartMs) / 1000) * TARGET_SAMPLE_RATE),
     );
     if (dropSamples <= 0) return;
     const trimmed = buffer.slice(dropSamples);
@@ -331,7 +342,8 @@ export async function startTranscriptionSession(
       backlogDroppedMs: 0,
       gatedWindows: 0,
       silentChunksDropped: 0,
-      message: "The microphone tap for transcription could not be created. The recording itself is unaffected.",
+      message:
+        "The microphone tap for transcription could not be created. The recording itself is unaffected.",
     });
     db.close();
     return null;
@@ -349,7 +361,13 @@ export async function startTranscriptionSession(
    */
   function dispatchWindowsUpTo(boundaryMs: number, options: { final: boolean }) {
     const spans = deriveSpans(presses, boundaryMs);
-    const windows = eligibleWindows(spans, SPAN_FLOOR_MS, MAX_WINDOW_MS, WINDOW_OVERLAP_MS, options.final);
+    const windows = eligibleWindows(
+      spans,
+      SPAN_FLOOR_MS,
+      MAX_WINDOW_MS,
+      WINDOW_OVERLAP_MS,
+      options.final,
+    );
     const bufferEndMs = bufferStartMs + (bufferSampleCount / TARGET_SAMPLE_RATE) * 1000;
 
     // T-05-13: which span each window belongs to, walked fresh from this
@@ -461,7 +479,10 @@ export async function startTranscriptionSession(
       // window still means "the transcript is caught up to here", which is
       // exactly what the NEXT sub-window's seam rule needs and what keeps a
       // long quiet stretch from reading as a stalled transcriber (D-57).
-      const coveredThroughMs = dedupedChunks.reduce((max, chunk) => Math.max(max, chunk.endMs), meta.endMs);
+      const coveredThroughMs = dedupedChunks.reduce(
+        (max, chunk) => Math.max(max, chunk.endMs),
+        meta.endMs,
+      );
       spanWrittenEndMs.set(meta.spanStartMs, Math.max(previousWrittenEndMs, coveredThroughMs));
       if (coveredThroughMs > newestSegmentEndMs) newestSegmentEndMs = coveredThroughMs;
     }
@@ -532,7 +553,9 @@ export async function startTranscriptionSession(
       clearInterval(tickHandle);
       tickHandle = null;
     }
-    emitStatus("The transcription worker sent an unreadable message. The recording itself is unaffected.");
+    emitStatus(
+      "The transcription worker sent an unreadable message. The recording itself is unaffected.",
+    );
   };
 
   worker.postMessage({ type: "load" } satisfies WhisperRequest);
@@ -576,7 +599,8 @@ export async function startTranscriptionSession(
     }
     if (pendingWindowIds.size > 0) anyWindowErrored = true;
 
-    const isComplete = !anyWindowErrored && pendingWindowIds.size === 0 && backlogDroppedMs === 0 && !isResumedTake;
+    const isComplete =
+      !anyWindowErrored && pendingWindowIds.size === 0 && backlogDroppedMs === 0 && !isResumedTake;
 
     try {
       if (db) {

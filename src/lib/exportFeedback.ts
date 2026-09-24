@@ -1,7 +1,19 @@
-import type { Coverage, FeedbackDocument, JdCoverageItem, ResumeConsistencyFinding, SubAsk, Exchange } from "../types";
+import type {
+  Coverage,
+  FeedbackDocument,
+  JdCoverageItem,
+  ResumeConsistencyFinding,
+  SubAsk,
+  Exchange,
+} from "../types";
 import { formatElapsed } from "./formatTime";
 import { downloadBlob } from "./download";
-import { deriveSilentGaps, deriveMissedFollowUps, deriveJdCoverage, deriveScoreRow } from "./feedbackRollups";
+import {
+  deriveSilentGaps,
+  deriveMissedFollowUps,
+  deriveJdCoverage,
+  deriveScoreRow,
+} from "./feedbackRollups";
 
 /**
  * PDF, DOCX and plain-text export for the LIVE-20 feedback document.
@@ -125,12 +137,14 @@ function evidenceLine(subAsk: SubAsk): string | null {
 /** Sections 1 and 2 (D-58): the shared row shape `SilentGap`/`MissedFollowUp` both carry, rendered exactly as `SubAskRollupList` renders them on screen — coverage glyph plus word, the question, the sub-ask text — with no evidence quote (neither type carries one). */
 function rollupLines(
   items: { questionText: string; subAskText: string; coverage: Coverage }[],
-  emptyText: string
+  emptyText: string,
 ): DocLine[] {
   if (items.length === 0) return [{ text: emptyText }];
   const lines: DocLine[] = [];
   for (const item of items) {
-    lines.push({ text: `${COVERAGE_GLYPH[item.coverage]} ${COVERAGE_LABEL[item.coverage]} — ${item.questionText}` });
+    lines.push({
+      text: `${COVERAGE_GLYPH[item.coverage]} ${COVERAGE_LABEL[item.coverage]} — ${item.questionText}`,
+    });
     lines.push({ text: item.subAskText, indent: true });
   }
   return lines;
@@ -141,7 +155,9 @@ function resumeConsistencyLines(findings: ResumeConsistencyFinding[]): DocLine[]
   if (findings.length === 0) return [{ text: "Nothing said contradicted the resume." }];
   const lines: DocLine[] = [];
   for (const finding of findings) {
-    lines.push({ text: `Said: [${formatElapsed(finding.spokenStartMs ?? 0)}] "${finding.spokenQuote}"` });
+    lines.push({
+      text: `Said: [${formatElapsed(finding.spokenStartMs ?? 0)}] "${finding.spokenQuote}"`,
+    });
     lines.push({ text: `Resume says: "${finding.resumeLine}"`, indent: true });
     if (finding.note.trim()) lines.push({ text: finding.note, indent: true });
   }
@@ -176,7 +192,10 @@ function strengthsSectionLines(doc: FeedbackDocument): DocLine[] {
 /** Section 6 (D-58, last): one exchange's full card — question, intent, every sub-ask with its verdict/evidence, then the D-73 STAR read only when `starApplicable` is true AND `deriveScoreRow` actually returns a row (never a row of zeros). */
 function exchangeLines(exchange: Exchange): DocLine[] {
   const lines: DocLine[] = [];
-  lines.push({ text: `${exchange.exchangeIndex + 1}. ${exchange.questionText}`, isExchangeHeader: true });
+  lines.push({
+    text: `${exchange.exchangeIndex + 1}. ${exchange.questionText}`,
+    isExchangeHeader: true,
+  });
 
   if (exchange.questionIntent.trim()) {
     lines.push({ text: exchange.questionIntent, indent: true });
@@ -224,10 +243,19 @@ function exchangeLines(exchange: Exchange): DocLine[] {
  */
 function buildSections(doc: FeedbackDocument): DocSection[] {
   return [
-    { heading: "Silent gaps", lines: rollupLines(deriveSilentGaps(doc), "Every sub-ask the interviewer asked was addressed.") },
+    {
+      heading: "Silent gaps",
+      lines: rollupLines(
+        deriveSilentGaps(doc),
+        "Every sub-ask the interviewer asked was addressed.",
+      ),
+    },
     {
       heading: "Missed follow-ups",
-      lines: rollupLines(deriveMissedFollowUps(doc), "No follow-up implied by the job description was missed."),
+      lines: rollupLines(
+        deriveMissedFollowUps(doc),
+        "No follow-up implied by the job description was missed.",
+      ),
     },
     { heading: "Resume consistency", lines: resumeConsistencyLines(doc.resumeConsistency) },
     { heading: "JD coverage", lines: jdCoverageLines(deriveJdCoverage(doc)) },
@@ -276,7 +304,7 @@ export const exportFeedbackToPDF = async (doc: FeedbackDocument, meta: FeedbackE
       gapAfter: number;
       color?: [number, number, number];
       indent?: number;
-    }
+    },
   ) => {
     pdf.setFontSize(opts.size);
     pdf.setFont("helvetica", opts.style ?? "normal");
@@ -296,7 +324,12 @@ export const exportFeedbackToPDF = async (doc: FeedbackDocument, meta: FeedbackE
 
   writeBlock(documentTitle(meta), { size: 20, style: "bold", gapAfter: 6 });
   writeBlock(metaLine(meta), { size: 10, gapAfter: 4, color: [110, 110, 110] });
-  writeBlock(CONTENT_ONLY_CLAIM, { size: 9, style: "italic", gapAfter: 20, color: [110, 110, 110] });
+  writeBlock(CONTENT_ONLY_CLAIM, {
+    size: 9,
+    style: "italic",
+    gapAfter: 20,
+    color: [110, 110, 110],
+  });
 
   if (doc.exchanges.length === 0) {
     writeBlock(NO_SUBSTANTIVE_QUESTIONS_LINE, { size: 11, gapAfter: 0 });
@@ -310,7 +343,12 @@ export const exportFeedbackToPDF = async (doc: FeedbackDocument, meta: FeedbackE
     for (const line of section.lines) {
       if (line.isExchangeHeader) ensureRoom(60);
       if (line.indent) {
-        writeBlock(line.text, { size: 10.5, gapAfter: 4, indent: subAskIndent, color: [60, 60, 60] });
+        writeBlock(line.text, {
+          size: 10.5,
+          gapAfter: 4,
+          indent: subAskIndent,
+          color: [60, 60, 60],
+        });
       } else {
         writeBlock(line.text, { size: 11, style: "bold", gapAfter: 4 });
       }
@@ -323,7 +361,8 @@ export const exportFeedbackToPDF = async (doc: FeedbackDocument, meta: FeedbackE
 
 /** DOCX export — real Word XML via the `docx` package, not an HTML rename. */
 export const exportFeedbackToDOCX = async (doc: FeedbackDocument, meta: FeedbackExportMeta) => {
-  const { Document, Packer, Paragraph, HeadingLevel, TextRun, AlignmentType } = await import("docx");
+  const { Document, Packer, Paragraph, HeadingLevel, TextRun, AlignmentType } =
+    await import("docx");
 
   const subAskIndentTwips = 360; // ~0.25in
 
@@ -335,17 +374,25 @@ export const exportFeedbackToDOCX = async (doc: FeedbackDocument, meta: Feedback
       spacing: { after: 80 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: CONTENT_ONLY_CLAIM, italics: true, size: 18, color: "6E6E6E" })],
+      children: [
+        new TextRun({ text: CONTENT_ONLY_CLAIM, italics: true, size: 18, color: "6E6E6E" }),
+      ],
       spacing: { after: 320 },
     }),
   ];
 
   if (doc.exchanges.length === 0) {
-    children.push(new Paragraph({ children: [new TextRun({ text: NO_SUBSTANTIVE_QUESTIONS_LINE })] }));
+    children.push(
+      new Paragraph({ children: [new TextRun({ text: NO_SUBSTANTIVE_QUESTIONS_LINE })] }),
+    );
   } else {
     for (const section of buildSections(doc)) {
       children.push(
-        new Paragraph({ text: section.heading, heading: HeadingLevel.HEADING_2, spacing: { before: 280, after: 100 } })
+        new Paragraph({
+          text: section.heading,
+          heading: HeadingLevel.HEADING_2,
+          spacing: { before: 280, after: 100 },
+        }),
       );
       for (const line of section.lines) {
         children.push(
@@ -353,7 +400,7 @@ export const exportFeedbackToDOCX = async (doc: FeedbackDocument, meta: Feedback
             children: [new TextRun({ text: line.text, bold: !line.indent })],
             indent: line.indent ? { left: subAskIndentTwips } : undefined,
             spacing: { after: 120 },
-          })
+          }),
         );
       }
     }

@@ -81,7 +81,7 @@ export function startRecorder(
   stream: MediaStream,
   mimeType: string,
   clock: () => number,
-  onChunk: (meta: RecorderChunkMeta, blob: Blob) => void
+  onChunk: (meta: RecorderChunkMeta, blob: Blob) => void,
 ): RecorderHandle {
   let seq = 0;
   const recorder = new MediaRecorder(stream, { mimeType });
@@ -94,7 +94,7 @@ export function startRecorder(
           size: e.data.size,
           mimeType,
         },
-        e.data
+        e.data,
       );
     }
   };

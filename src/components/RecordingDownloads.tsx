@@ -112,9 +112,9 @@ export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
   if (takes.length === 0) {
     if (hasActiveTake) return null;
     return (
-      <div className="flex flex-col gap-2 border-t border-[rgba(255,255,255,0.07)] pt-5">
-        <h3 className="text-sm font-semibold text-[#eef0f3]">No recordings yet</h3>
-        <p className="text-xs text-[#9aa3b0] leading-relaxed">
+      <div className="flex flex-col gap-2 border-t border-rule pt-5">
+        <h3 className="text-[15px] font-semibold text-ink">No recordings yet</h3>
+        <p className="text-[15px] text-ink-soft leading-relaxed measure">
           Finished takes will appear here, newest first, each with its own downloads.
         </p>
       </div>
@@ -122,15 +122,14 @@ export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
   }
 
   return (
-    <div className="flex flex-col gap-4 border-t border-[rgba(255,255,255,0.07)] pt-5">
+    <div className="flex flex-col gap-4 border-t border-rule pt-5">
       <div>
-        <h3 className="text-sm font-semibold text-[#eef0f3]">
+        <h3 className="text-[15px] font-semibold text-ink">
           {takes.length === 1 ? "1 recorded take" : `${takes.length} recorded takes`}
         </h3>
-        <p className="text-xs text-[#6b7685] mt-1">
-          Up to three files per take — the audio, a JSON tag track of who was speaking when, and a
-          plain-text transcript. Nothing was uploaded; these come straight from this browser's
-          storage.
+        <p className="text-[15px] text-ink-muted mt-1">
+          Audio, a tag track of who spoke when, and a transcript — straight from this browser, never
+          uploaded.
         </p>
       </div>
 
@@ -156,10 +155,9 @@ export const RecordingDownloads: React.FC<RecordingDownloadsProps> = ({
         ))}
       </div>
 
-      <p className="text-xs text-[#6b7685]">
-        A take's audio is deleted once its transcript is complete, unless keep-audio was ticked
-        before that take started. The transcript and the tag track are always kept. Nothing here
-        is ever removed except by a take's own delete control, or by "Clear stored data".
+      <p className="text-[15px] text-ink-muted">
+        Audio is deleted once its transcript is written, unless keep-audio was ticked; transcripts
+        and tag tracks are kept. Only a take's delete control or "Clear stored data" removes them.
       </p>
     </div>
   );
@@ -226,44 +224,42 @@ const TakeRow: React.FC<TakeRowProps> = ({
   const state = classifyTake(take, transcriptCount);
 
   return (
-    <div className="flex flex-col gap-3 rounded-[8px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] p-4">
+    <div className="flex flex-col gap-3 border-t border-rule py-4 first:border-t-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <span className="flex items-baseline gap-2">
-          <span className="text-sm font-semibold text-[#eef0f3]">{takeLabel}</span>
+          <span className="text-[15px] font-semibold text-ink">{takeLabel}</span>
           {isLoaded && (
             <span
-              className="text-[10px] font-semibold uppercase tracking-wide text-[#00d4dc]"
+              className="text-xs font-semibold tracking-wide text-accent"
               title="This take's transcript and feedback surface are currently on screen"
             >
               On screen
             </span>
           )}
         </span>
-        <span className="text-xs text-[#6b7685]">
+        <span className="text-[15px] text-ink-muted">
           {formatElapsed(take.durationMs)} · ~{formatSizeMb(take.sizeBytes ?? 0)} MB
         </span>
       </div>
 
       {state === "audioDeleted" && (
-        <p className="text-xs text-[#9aa3b0] leading-relaxed">
-          This take's audio was deleted once its transcript was safely written, because keep-audio
-          was left unticked at the consent step. The transcript and tag track are unaffected.
+        <p className="text-[15px] text-ink-soft leading-relaxed measure">
+          Audio deleted once the transcript was written — keep-audio was unticked.
         </p>
       )}
       {state === "incomplete" && (
-        <p className="text-xs text-[#9aa3b0] leading-relaxed">
-          This take's transcript is partial — the audio was kept because of it, regardless of the
-          keep-audio choice.
+        <p className="text-[15px] text-ink-soft leading-relaxed measure">
+          Transcript is partial, so the audio was kept regardless of the keep-audio choice.
         </p>
       )}
       {state === "noTranscript" && (
-        <p className="text-xs text-[#9aa3b0] leading-relaxed">
-          This take was recorded before transcription existed in this tool. Its audio and tag
-          track are intact; it cannot be transcribed now.
+        <p className="text-[15px] text-ink-soft leading-relaxed measure">
+          Recorded before this tool could transcribe. Audio and tag track are intact; it cannot be
+          transcribed now.
         </p>
       )}
       {isAnalysed && (
-        <p className="text-xs text-[#9aa3b0] leading-relaxed">
+        <p className="text-[15px] text-ink-soft leading-relaxed measure">
           A feedback document is already stored for this take — opening it will not cost another
           call.
         </p>
@@ -271,13 +267,15 @@ const TakeRow: React.FC<TakeRowProps> = ({
 
       {isConfirmingDelete ? (
         <div className="flex flex-wrap items-center gap-2 justify-between">
-          <span className="text-xs text-[#9aa3b0]">Delete the {takeLabel} take? This can't be undone.</span>
+          <span className="text-[15px] text-ink-soft">
+            Delete the {takeLabel} take? This can't be undone.
+          </span>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => onDeleteTake(take.sessionId)}
               disabled={isDeleting}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[5px] bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-xs font-semibold transition-all active:scale-95 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control bg-mark/10 hover:bg-mark/20 border border-mark/30 text-mark text-[15px] font-semibold transition-all disabled:opacity-50"
             >
               <Trash2 className="w-3.5 h-3.5" />
               {isDeleting ? "Deleting…" : "Yes, delete this take"}
@@ -286,14 +284,14 @@ const TakeRow: React.FC<TakeRowProps> = ({
               type="button"
               onClick={() => setIsConfirmingDelete(false)}
               disabled={isDeleting}
-              className="px-3 py-2 rounded-[5px] border border-[rgba(255,255,255,0.07)] text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#161a1e] text-xs font-semibold transition-all active:scale-95 disabled:opacity-50"
+              className="px-3 py-2 rounded-control border border-rule text-ink-soft hover:text-ink hover:bg-surface text-[15px] font-semibold transition-all disabled:opacity-50"
             >
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
           {state === "audioDeleted" ? (
             <UnavailableSlot label="Audio" reason="Deleted after transcription" />
           ) : (
@@ -318,7 +316,10 @@ const TakeRow: React.FC<TakeRowProps> = ({
             />
           )}
           {state === "noTranscript" ? (
-            <UnavailableSlot label="Analyse" reason="No transcript to analyse — cannot be transcribed now" />
+            <UnavailableSlot
+              label="Analyse"
+              reason="No transcript to analyse — cannot be transcribed now"
+            />
           ) : (
             <AnalyseButton
               label={isAnalysed ? "Analyse again" : "Analyse"}
@@ -329,10 +330,10 @@ const TakeRow: React.FC<TakeRowProps> = ({
           <button
             type="button"
             onClick={() => setIsConfirmingDelete(true)}
-            className="flex items-center justify-center gap-2 px-4 py-3 rounded-[6px] border border-[rgba(255,255,255,0.07)] text-[#9aa3b0] hover:text-red-400 hover:border-red-500/30 hover:bg-red-500/10 text-xs font-semibold uppercase tracking-widest transition-all active:scale-[0.98]"
+            className="ml-auto inline-flex items-center gap-1.5 text-[15px] text-ink-muted transition-colors hover:text-mark"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Delete this take
+            Delete
           </button>
         </div>
       )}
@@ -351,7 +352,7 @@ const DownloadButton: React.FC<DownloadButtonProps> = ({ label, isDownloading, o
     <button
       onClick={onClick}
       disabled={isDownloading}
-      className="flex items-center justify-center gap-2 px-4 py-3 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-xs font-semibold uppercase tracking-widest"
+      className="inline-flex items-center gap-1.5 text-[15px] text-accent transition-opacity hover:underline underline-offset-4 disabled:opacity-50 disabled:no-underline"
     >
       {isDownloading ? (
         <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
@@ -382,7 +383,7 @@ const AnalyseButton: React.FC<AnalyseButtonProps> = ({ label, isAnalysing, onCli
       type="button"
       onClick={onClick}
       disabled={isAnalysing}
-      className="flex items-center justify-center gap-2 px-4 py-3 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-xs font-semibold uppercase tracking-widest"
+      className="inline-flex items-center gap-1.5 text-[15px] text-accent transition-opacity hover:underline underline-offset-4 disabled:opacity-50 disabled:no-underline"
     >
       {isAnalysing ? (
         <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
@@ -409,9 +410,9 @@ interface UnavailableSlotProps {
  */
 const UnavailableSlot: React.FC<UnavailableSlotProps> = ({ label, reason }) => {
   return (
-    <div className="flex flex-col items-center justify-center gap-0.5 px-4 py-3 rounded-[6px] border border-dashed border-[rgba(255,255,255,0.1)] text-center">
-      <span className="text-xs font-semibold uppercase tracking-widest text-[#6b7685]">{label}</span>
-      <span className="text-[10px] text-[#6b7685] leading-tight">{reason}</span>
-    </div>
+    <span className="inline-flex items-baseline gap-1.5 text-[15px] text-ink-muted" title={reason}>
+      <span className="line-through">{label}</span>
+      <span className="text-sm">({reason})</span>
+    </span>
   );
 };

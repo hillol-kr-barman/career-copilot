@@ -69,7 +69,7 @@ export const exportQAtoPDF = async (pairs: QAPair[], meta: ExportMeta) => {
        * byte-identical to before this option existed.
        */
       indent?: number;
-    }
+    },
   ) => {
     doc.setFontSize(opts.size);
     doc.setFont("helvetica", opts.style ?? "normal");
@@ -90,7 +90,7 @@ export const exportQAtoPDF = async (pairs: QAPair[], meta: ExportMeta) => {
   writeBlock(documentTitle(meta), { size: 20, style: "bold", gapAfter: 6 });
   writeBlock(
     `${pairs.length} question${pairs.length === 1 ? "" : "s"} · generated ${new Date().toLocaleDateString()}`,
-    { size: 10, gapAfter: 22, color: [110, 110, 110] }
+    { size: 10, gapAfter: 22, color: [110, 110, 110] },
   );
 
   pairs.forEach((pair, i) => {
@@ -114,7 +114,8 @@ export const exportQAtoPDF = async (pairs: QAPair[], meta: ExportMeta) => {
 
 /** DOCX export — real Word XML via the `docx` package, not an HTML rename. */
 export const exportQAtoDOCX = async (pairs: QAPair[], meta: ExportMeta) => {
-  const { Document, Packer, Paragraph, HeadingLevel, TextRun, AlignmentType } = await import("docx");
+  const { Document, Packer, Paragraph, HeadingLevel, TextRun, AlignmentType } =
+    await import("docx");
 
   const children: ParagraphType[] = [
     new Paragraph({
@@ -134,7 +135,7 @@ export const exportQAtoDOCX = async (pairs: QAPair[], meta: ExportMeta) => {
       ],
       alignment: AlignmentType.LEFT,
       spacing: { after: 320 },
-    })
+    }),
   );
 
   pairs.forEach((pair, i) => {
@@ -143,7 +144,7 @@ export const exportQAtoDOCX = async (pairs: QAPair[], meta: ExportMeta) => {
         text: `${i + 1}. ${pair.question}`,
         heading: HeadingLevel.HEADING_2,
         spacing: { before: 280, after: 100 },
-      })
+      }),
     );
 
     if (pair.category || pair.rationale) {
@@ -158,7 +159,7 @@ export const exportQAtoDOCX = async (pairs: QAPair[], meta: ExportMeta) => {
             }),
           ],
           spacing: { after: 120 },
-        })
+        }),
       );
     }
 
@@ -166,7 +167,7 @@ export const exportQAtoDOCX = async (pairs: QAPair[], meta: ExportMeta) => {
       new Paragraph({
         children: [new TextRun({ text: pair.answer })],
         spacing: { after: 200 },
-      })
+      }),
     );
   });
 

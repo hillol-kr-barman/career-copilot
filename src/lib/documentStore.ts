@@ -1,4 +1,12 @@
-import type { Coverage, Exchange, FeedbackDocument, JdCoverageItem, ResumeConsistencyFinding, SubAsk, SubAskSource } from "../types";
+import type {
+  Coverage,
+  Exchange,
+  FeedbackDocument,
+  JdCoverageItem,
+  ResumeConsistencyFinding,
+  SubAsk,
+  SubAskSource,
+} from "../types";
 import { openRecordingDB, DOCUMENTS_STORE } from "./recordingStore";
 
 /**
@@ -17,7 +25,12 @@ import { openRecordingDB, DOCUMENTS_STORE } from "./recordingStore";
  * failure rather than throwing into the render.
  */
 
-const KNOWN_COVERAGE_VALUES: readonly Coverage[] = ["ADDRESSED", "PARTIAL", "NOT_ADDRESSED", "DEFLECTED"];
+const KNOWN_COVERAGE_VALUES: readonly Coverage[] = [
+  "ADDRESSED",
+  "PARTIAL",
+  "NOT_ADDRESSED",
+  "DEFLECTED",
+];
 
 /**
  * Field-by-field validation of one sub-ask entry inside a stored exchange. A
@@ -33,7 +46,10 @@ function validateSubAsk(raw: unknown): SubAsk | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
   if (typeof record.text !== "string") return null;
-  if (typeof record.coverage !== "string" || !(KNOWN_COVERAGE_VALUES as readonly string[]).includes(record.coverage)) {
+  if (
+    typeof record.coverage !== "string" ||
+    !(KNOWN_COVERAGE_VALUES as readonly string[]).includes(record.coverage)
+  ) {
     return null;
   }
   if (typeof record.quoteUnverified !== "boolean") return null;
@@ -47,9 +63,12 @@ function validateSubAsk(raw: unknown): SubAsk | null {
     quoteUnverified: record.quoteUnverified,
     assessment: typeof record.assessment === "string" ? record.assessment : "",
     whatAGoodAnswerWouldHaveIncluded:
-      typeof record.whatAGoodAnswerWouldHaveIncluded === "string" ? record.whatAGoodAnswerWouldHaveIncluded : "",
+      typeof record.whatAGoodAnswerWouldHaveIncluded === "string"
+        ? record.whatAGoodAnswerWouldHaveIncluded
+        : "",
   };
-  if (typeof record.evidenceSegmentSeq === "number") subAsk.evidenceSegmentSeq = record.evidenceSegmentSeq;
+  if (typeof record.evidenceSegmentSeq === "number")
+    subAsk.evidenceSegmentSeq = record.evidenceSegmentSeq;
   if (typeof record.evidenceStartMs === "number") subAsk.evidenceStartMs = record.evidenceStartMs;
   return subAsk;
 }
@@ -88,7 +107,17 @@ function validateExchange(raw: unknown): Exchange | null {
 
   if (record.scoreRow && typeof record.scoreRow === "object") {
     const scoreRowCandidate = record.scoreRow as Record<string, unknown>;
-    const numericFields = ["s", "tE", "a", "rT", "starRating", "cS", "aE", "rA", "competencyRating"] as const;
+    const numericFields = [
+      "s",
+      "tE",
+      "a",
+      "rT",
+      "starRating",
+      "cS",
+      "aE",
+      "rA",
+      "competencyRating",
+    ] as const;
     const isValidScoreRow =
       typeof scoreRowCandidate.questionDescription === "string" &&
       numericFields.every((field) => typeof scoreRowCandidate[field] === "number");
@@ -130,7 +159,8 @@ function validateResumeConsistencyFinding(raw: unknown): ResumeConsistencyFindin
     resumeLine: record.resumeLine,
     note: typeof record.note === "string" ? record.note : "",
   };
-  if (typeof record.spokenSegmentSeq === "number") finding.spokenSegmentSeq = record.spokenSegmentSeq;
+  if (typeof record.spokenSegmentSeq === "number")
+    finding.spokenSegmentSeq = record.spokenSegmentSeq;
   if (typeof record.spokenStartMs === "number") finding.spokenStartMs = record.spokenStartMs;
   return finding;
 }
@@ -217,9 +247,9 @@ export async function putFeedbackDocument(document: FeedbackDocument): Promise<v
         reject(
           isQuotaError
             ? new Error(
-                "This browser ran out of local storage space to save the feedback document. Free up space, then try again — the document on screen has not been lost."
+                "This browser ran out of local storage space to save the feedback document. Free up space, then try again — the document on screen has not been lost.",
               )
-            : tx.error || new Error("Failed to save the feedback document.")
+            : tx.error || new Error("Failed to save the feedback document."),
         );
       };
     });

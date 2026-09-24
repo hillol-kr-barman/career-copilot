@@ -121,7 +121,7 @@ export function evaluatePreflightSample(
   level: number,
   sampleMs: number,
   floor: number,
-  sustainMs: number
+  sustainMs: number,
 ): PreflightSampleState {
   const peakLevel = Math.max(prev.peakLevel, level);
 

@@ -14,7 +14,11 @@ import { findQuoteInSegments, fingerprintSegments } from "../lib/quoteMatcher";
 import { startTranscriptionSession, warmUpWhisper } from "../lib/transcriptionSession";
 import type { TranscriptionSessionHandle, TranscriptionStatus } from "../lib/transcriptionSession";
 import { readSegments, applyResolvedSpeakers, countSegments } from "../lib/transcriptStore";
-import { putFeedbackDocument, readFeedbackDocument, listAnalysedSessionIds } from "../lib/documentStore";
+import {
+  putFeedbackDocument,
+  readFeedbackDocument,
+  listAnalysedSessionIds,
+} from "../lib/documentStore";
 import { effectiveSpeaker, groupIntoTurns, moveTurnBoundary } from "../lib/transcriptTurns";
 import { formatTranscriptText } from "../lib/transcriptText";
 import {
@@ -26,7 +30,12 @@ import {
   UNSUPPORTED_FORMAT_REASON,
 } from "../lib/audioCapture";
 import type { AudioInputDevice } from "../lib/audioCapture";
-import { pickSupportedMimeType, startRecorder, audioElapsedMs, isRecordingFormatSupported } from "../lib/recorder";
+import {
+  pickSupportedMimeType,
+  startRecorder,
+  audioElapsedMs,
+  isRecordingFormatSupported,
+} from "../lib/recorder";
 import type { RecorderHandle } from "../lib/recorder";
 import { createLevelMeter } from "../lib/levelMeter";
 import type { LevelMeterHandle } from "../lib/levelMeter";
@@ -336,7 +345,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
   const pauseStartRef = useRef<number | null>(null);
   const tsOffsetMsRef = useRef(0);
 
-  const clock = () => audioElapsedMs(clockOriginRef.current, pausedMsRef.current, tsOffsetMsRef.current);
+  const clock = () =>
+    audioElapsedMs(clockOriginRef.current, pausedMsRef.current, tsOffsetMsRef.current);
 
   /**
    * Reads a segment count for every given take and replaces
@@ -347,7 +357,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
    */
   const refreshTranscriptCounts = async (takes: RecordingSession[]) => {
     const entries = await Promise.all(
-      takes.map(async (take): Promise<[string, number]> => [take.sessionId, await countSegments(take.sessionId)])
+      takes.map(async (take): Promise<[string, number]> => [
+        take.sessionId,
+        await countSegments(take.sessionId),
+      ]),
     );
     setTranscriptCounts(Object.fromEntries(entries));
   };
@@ -569,7 +582,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         } else if (!wakeLockDismissedRef.current) {
           setWakeLockUnavailable(true);
         }
-      }
+      },
     );
     return remove;
   }, [isActiveRecording]);
@@ -596,7 +609,11 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       // — it is itself a <button type="button" onClick={onFlip}>, so letting
       // the browser's native Space-activation fire its click still flips the
       // speaker; only the flip's origin changes, not whether it happens.
-      if (tag === "BUTTON" || (active instanceof HTMLElement && active.getAttribute("role") === "button")) return;
+      if (
+        tag === "BUTTON" ||
+        (active instanceof HTMLElement && active.getAttribute("role") === "button")
+      )
+        return;
       e.preventDefault();
       flipSpeaker();
     };
@@ -770,7 +787,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       setError(
         seedWasPending
           ? `${describeCaptureError(err)} Your unfinished recording is still saved — reload the page to try recovering it again.`
-          : describeCaptureError(err)
+          : describeCaptureError(err),
       );
     }
   };
@@ -947,7 +964,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       const handle = startRecorder(micStream, mimeType, clock, (meta, blob) => {
         const adjusted = { ...meta, sessionId, seq: meta.seq + seedSeq };
         pendingChunkWritesRef.current = appendChunk(db, adjusted, blob).catch((chunkErr) => {
-          setError(chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk.");
+          setError(
+            chunkErr instanceof Error ? chunkErr.message : "Failed to save a recording chunk.",
+          );
         });
       });
       // Same reasoning as dbRef.current above: tracked the moment it exists
@@ -987,7 +1006,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         transcriptionRef.current = transcriptionSession;
         if (!transcriptionSession) {
           setTranscriptionWarning(
-            "Live transcription could not start for this take. The recording itself is unaffected."
+            "Live transcription could not start for this take. The recording itself is unaffected.",
           );
         }
       } catch (transcriptionErr) {
@@ -995,7 +1014,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         setTranscriptionWarning(
           transcriptionErr instanceof Error
             ? `Live transcription could not start: ${transcriptionErr.message} The recording itself is unaffected.`
-            : "Live transcription could not start for this take. The recording itself is unaffected."
+            : "Live transcription could not start for this take. The recording itself is unaffected.",
         );
       }
 
@@ -1057,9 +1076,11 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
     // boundaries milliseconds apart.
     const tsMs = clock();
     setSpeaker(next);
-    appendTagPress(dbRef.current, { sessionId: session.sessionId, tsMs, speaker: next }).catch((err) => {
-      setError(err instanceof Error ? err.message : "Failed to save a tag press.");
-    });
+    appendTagPress(dbRef.current, { sessionId: session.sessionId, tsMs, speaker: next }).catch(
+      (err) => {
+        setError(err instanceof Error ? err.message : "Failed to save a tag press.");
+      },
+    );
     transcriptionRef.current?.notePress(tsMs, next);
   };
 
@@ -1211,7 +1232,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
    * its own take's fields).
    */
   const findTake = (sessionId: string): RecordingSession | null =>
-    stoppedTakes.find((t) => t.sessionId === sessionId) ?? (session?.sessionId === sessionId ? session : null);
+    stoppedTakes.find((t) => t.sessionId === sessionId) ??
+    (session?.sessionId === sessionId ? session : null);
 
   /**
    * Re-assembles one take's audio blob from storage and hands it to the
@@ -1238,7 +1260,9 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         setError("Could not assemble the recording for download.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not assemble the recording for download.");
+      setError(
+        err instanceof Error ? err.message : "Could not assemble the recording for download.",
+      );
     } finally {
       setDownloading((prev) => ({ ...prev, [key]: false }));
     }
@@ -1398,7 +1422,11 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       for (let i = 0; i < recomputed.length; i++) {
         const next = recomputed[i];
         const prev = transcriptSegments[i];
-        if (prev.seq === next.seq && next.resolvedSpeaker !== undefined && next.resolvedSpeaker !== prev.resolvedSpeaker) {
+        if (
+          prev.seq === next.seq &&
+          next.resolvedSpeaker !== undefined &&
+          next.resolvedSpeaker !== prev.resolvedSpeaker
+        ) {
           updates.push({ seq: next.seq, resolvedSpeaker: next.resolvedSpeaker });
         }
       }
@@ -1501,7 +1529,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
             questionText: exchange.questionText,
             questionIntent: exchange.questionIntent,
             answerText: exchange.answerText,
-            subAsks: exchange.subAsks.map((subAsk) => ({ text: subAsk.text, source: subAsk.source })),
+            subAsks: exchange.subAsks.map((subAsk) => ({
+              text: subAsk.text,
+              source: subAsk.source,
+            })),
           })),
           jobDescription: context.jobDescription,
           resumeText: context.resumeText,
@@ -1513,19 +1544,24 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not judge the interview.");
 
-      const verdictsByIndex = new Map<number, { subAsks: { text: string; coverage: string; evidenceQuote: string; assessment: string }[] }>(
-        (data.exchanges as any[]).map((e) => [e.exchangeIndex, e])
-      );
+      const verdictsByIndex = new Map<
+        number,
+        { subAsks: { text: string; coverage: string; evidenceQuote: string; assessment: string }[] }
+      >((data.exchanges as any[]).map((e) => [e.exchangeIndex, e]));
 
       // D-49: attribution is always resolvedSpeaker ?? speaker, never
       // re-derived from spans.
-      const candidateSegments = transcriptSegments.filter((s) => effectiveSpeaker(s) === "candidate");
-      const interviewerSegments = transcriptSegments.filter((s) => effectiveSpeaker(s) === "interviewer");
+      const candidateSegments = transcriptSegments.filter(
+        (s) => effectiveSpeaker(s) === "candidate",
+      );
+      const interviewerSegments = transcriptSegments.filter(
+        (s) => effectiveSpeaker(s) === "interviewer",
+      );
 
       const judgedExchanges: Exchange[] = structuredExchanges.map((exchange) => {
         const verdict = verdictsByIndex.get(exchange.exchangeIndex);
         const verdictByText = new Map(
-          (verdict?.subAsks ?? []).map((subAsk) => [subAsk.text, subAsk])
+          (verdict?.subAsks ?? []).map((subAsk) => [subAsk.text, subAsk]),
         );
 
         const subAsks: SubAsk[] = exchange.subAsks.map((subAsk) => {
@@ -1567,7 +1603,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
       });
 
       judgedExchanges.sort(
-        (a, b) => (a.startMs ?? 0) - (b.startMs ?? 0) || a.exchangeIndex - b.exchangeIndex
+        (a, b) => (a.startMs ?? 0) - (b.startMs ?? 0) || a.exchangeIndex - b.exchangeIndex,
       );
 
       if (!session) return;
@@ -1603,7 +1639,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         setAnalysedSessionIds(ids);
       } catch {
         setError(
-          "The feedback document is on screen but could not be saved — reloading this page will lose it."
+          "The feedback document is on screen but could not be saved — reloading this page will lose it.",
         );
       }
     } catch (err: any) {
@@ -1704,9 +1740,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
   return (
     <ToolSection
       id="tool-live-interview"
-      step="Tool 4"
+      step="05"
+      phase="Recording"
       title="Live Interview"
-      subtitle="Record both people in the room through one microphone — nothing leaves this browser"
+      subtitle="One microphone, both people. Nothing leaves this browser."
       lockedReason={lockedReason}
     >
       <div className="flex flex-col gap-5">
@@ -1715,7 +1752,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
             can appear with no user action at all, on a page load after a
             crash. */}
         {recoveryScanning ? (
-          <div className="flex items-center gap-2.5 text-xs text-[#9aa3b0] bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] px-4 py-4">
+          <div className="flex items-center gap-2.5 text-[15px] text-ink-soft bg-sunken border border-rule rounded-control px-4 py-4">
             <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
             <span>Checking for an unfinished recording…</span>
           </div>
@@ -1731,14 +1768,14 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         ) : null}
 
         {recoveryError && (
-          <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
+          <div className="p-3 bg-mark/10 text-mark border border-mark/15 rounded-control text-[15px] flex items-center gap-2 font-medium">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>{recoveryError}</span>
           </div>
         )}
 
         {error && (
-          <div className="p-3 bg-red-500/10 text-red-500 border border-red-500/15 rounded-[6px] text-xs flex items-center gap-2 font-medium">
+          <div className="p-3 bg-mark/10 text-mark border border-mark/15 rounded-control text-[15px] flex items-center gap-2 font-medium">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>{error}</span>
           </div>
@@ -1813,8 +1850,11 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         {transcriptSegments.length > 0 && (
           <>
             {session && (
-              <p className="text-xs text-[#6b7685]">
-                On screen: <span className="text-[#9aa3b0] font-medium">{formatStartedAt(session.startedAt)}</span>
+              <p className="text-[15px] text-ink-muted">
+                On screen:{" "}
+                <span className="text-ink-soft font-medium">
+                  {formatStartedAt(session.startedAt)}
+                </span>
               </p>
             )}
             <TranscriptView
@@ -1865,7 +1905,12 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
           transcriptCounts={transcriptCounts}
           downloading={downloading}
           deletingIds={deletingIds}
-          hasActiveTake={status === "connecting" || status === "armed" || status === "recording" || status === "paused"}
+          hasActiveTake={
+            status === "connecting" ||
+            status === "armed" ||
+            status === "recording" ||
+            status === "paused"
+          }
           onAnalyseTake={handleAnalyseTake}
           loadedSessionId={loadedSessionId}
           analysedSessionIds={analysedSessionIds}

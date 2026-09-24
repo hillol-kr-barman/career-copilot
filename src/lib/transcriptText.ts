@@ -44,7 +44,10 @@ const CORRECTED_LABEL_SUFFIX = " (corrected)";
  *   carriage returns — `downloadText` writes UTF-8 and the file is read on
  *   the operator's own machine.
  */
-export function formatTranscriptText(take: RecordingSession, segments: TranscriptSegment[]): string {
+export function formatTranscriptText(
+  take: RecordingSession,
+  segments: TranscriptSegment[],
+): string {
   const startedAtLocal = new Date(take.startedAt).toLocaleString();
   const segmentCount = segments.length;
 
@@ -58,7 +61,8 @@ export function formatTranscriptText(take: RecordingSession, segments: Transcrip
     lines.push("No transcript segments were produced for this take.");
   } else {
     for (const turn of groupIntoTurns(segments)) {
-      const label = SPEAKER_EXPORT_LABEL[turn.speaker] + (turn.corrected ? CORRECTED_LABEL_SUFFIX : "");
+      const label =
+        SPEAKER_EXPORT_LABEL[turn.speaker] + (turn.corrected ? CORRECTED_LABEL_SUFFIX : "");
       const text = turn.segments
         .map((segment) => segment.text.trim())
         .filter((trimmed) => trimmed.length > 0)

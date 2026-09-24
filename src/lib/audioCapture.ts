@@ -89,7 +89,9 @@ export async function acquireMic(deviceId?: string): Promise<AcquireMicResult> {
     return { stream, usedFallback: false };
   } catch (err) {
     if (deviceId && err instanceof DOMException && err.name === "OverconstrainedError") {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(undefined) });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: micConstraints(undefined),
+      });
       return { stream, usedFallback: true };
     }
     throw err;

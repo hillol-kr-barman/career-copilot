@@ -135,7 +135,7 @@ function escapeRegExp(term: string): string {
 // phrase's own edges, so "paceable", "confidential" and "accentuate" never
 // trip "pace", "confident" or "accent" — there is no such transition mid-word.
 const DELIVERY_TERM_MATCHERS: RegExp[] = DELIVERY_TERMS.map(
-  (term) => new RegExp(`\\b${escapeRegExp(term)}\\b`, "i")
+  (term) => new RegExp(`\\b${escapeRegExp(term)}\\b`, "i"),
 );
 
 function sentenceNamesDeliveryTerm(sentence: string): boolean {
@@ -201,6 +201,9 @@ export function screenDeliveryProse(text: string): DeliveryScreenResult {
     return { text: safeText, withheldCount: 0 };
   }
 
-  const rejoined = survivors.length > 0 ? `${survivors.join(" ")} ${WITHHELD_REMARK_MARKER}` : WITHHELD_REMARK_MARKER;
+  const rejoined =
+    survivors.length > 0
+      ? `${survivors.join(" ")} ${WITHHELD_REMARK_MARKER}`
+      : WITHHELD_REMARK_MARKER;
   return { text: rejoined, withheldCount };
 }

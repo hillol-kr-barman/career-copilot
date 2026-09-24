@@ -76,7 +76,10 @@ export function groupIntoTurns(segments: TranscriptSegment[]): TranscriptTurn[] 
  * Returns a new array in the input's original order, with `resolvedSpeaker`
  * set only on the segments that changed.
  */
-export function moveTurnBoundary(segments: TranscriptSegment[], targetSeq: number): TranscriptSegment[] {
+export function moveTurnBoundary(
+  segments: TranscriptSegment[],
+  targetSeq: number,
+): TranscriptSegment[] {
   if (segments.length === 0) return [];
 
   const sorted = [...segments].sort((a, b) => a.startMs - b.startMs || a.seq - b.seq);
@@ -98,7 +101,8 @@ export function moveTurnBoundary(segments: TranscriptSegment[], targetSeq: numbe
   }
 
   const otherSpeaker: Speaker = targetSpeaker === "candidate" ? "interviewer" : "candidate";
-  const previousSpeaker: Speaker = turnStart > 0 ? effectiveSpeaker(sorted[turnStart - 1]) : otherSpeaker;
+  const previousSpeaker: Speaker =
+    turnStart > 0 ? effectiveSpeaker(sorted[turnStart - 1]) : otherSpeaker;
 
   const result = sorted.map((segment) => ({ ...segment }));
 

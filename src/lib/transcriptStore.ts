@@ -31,9 +31,9 @@ export async function appendSegment(db: IDBDatabase, segment: TranscriptSegment)
       reject(
         isQuotaError
           ? new Error(
-              "This browser ran out of local storage space to save the recording. Free up space or shorten the interview, then try again. Your recording so far has been kept."
+              "This browser ran out of local storage space to save the recording. Free up space or shorten the interview, then try again. Your recording so far has been kept.",
             )
-          : tx.error || new Error("Failed to save a transcript segment.")
+          : tx.error || new Error("Failed to save a transcript segment."),
       );
     };
   });
@@ -89,7 +89,7 @@ function validateSegmentRecord(raw: unknown): TranscriptSegment | null {
  * Returned segments are sorted ascending by `startMs` then `seq`.
  */
 export async function readSegments(
-  sessionId: string
+  sessionId: string,
 ): Promise<{ segments: TranscriptSegment[]; skippedCount: number }> {
   try {
     const db = await openRecordingDB();
@@ -165,7 +165,7 @@ export async function nextSegmentSeq(sessionId: string): Promise<number> {
  */
 export async function applyResolvedSpeakers(
   sessionId: string,
-  updates: { seq: number; resolvedSpeaker: Speaker }[]
+  updates: { seq: number; resolvedSpeaker: Speaker }[],
 ): Promise<void> {
   const db = await openRecordingDB();
   try {

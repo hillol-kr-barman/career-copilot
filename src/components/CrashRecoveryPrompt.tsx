@@ -55,18 +55,18 @@ export const CrashRecoveryPrompt: React.FC<CrashRecoveryPromptProps> = ({
 
   return (
     <div aria-live="polite">
-      <div className="w-full rounded-[8px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] p-5 flex flex-col gap-4">
+      <div className="w-full rounded-control border border-rule bg-sunken p-5 flex flex-col gap-4">
         <div className="flex items-start gap-3">
-          <span className="p-2 rounded-[6px] shrink-0 border bg-amber-500/10 border-amber-500/20 text-amber-400">
+          <span className="p-2 rounded-control shrink-0 border bg-warn/10 border-warn/20 text-warn">
             <RotateCcw className="w-5 h-5" />
           </span>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-[#eef0f3]">Recover your last recording?</h3>
-            <p className="text-sm text-[#9aa3b0] leading-relaxed mt-1">
-              Your last recording session ({relativeTime}) didn't finish cleanly — the tab may
-              have crashed or closed. {duration} of audio was recovered, and {marksLine} You can
-              pick up where you left off, keep what was captured without continuing it, or discard
-              it and start fresh. You may lose the last few seconds from before the interruption.
+            <h3 className="text-[15px] font-semibold text-ink">Recover your last recording?</h3>
+            <p className="text-[15px] text-ink-soft leading-relaxed mt-1 measure">
+              Your last recording session ({relativeTime}) didn't finish cleanly — the tab may have
+              crashed or closed. {duration} of audio was recovered, and {marksLine} You can pick up
+              where you left off, keep what was captured without continuing it, or discard it and
+              start fresh. You may lose the last few seconds from before the interruption.
             </p>
           </div>
         </div>
@@ -76,7 +76,7 @@ export const CrashRecoveryPrompt: React.FC<CrashRecoveryPromptProps> = ({
             <button
               type="button"
               onClick={onDiscard}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[5px] bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-xs font-semibold transition-all active:scale-95"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control bg-mark/10 hover:bg-mark/20 border border-mark/30 text-mark text-[15px] font-semibold transition-all"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Yes, discard
@@ -84,7 +84,7 @@ export const CrashRecoveryPrompt: React.FC<CrashRecoveryPromptProps> = ({
             <button
               type="button"
               onClick={() => setIsConfirming(false)}
-              className="px-3 py-2 rounded-[5px] border border-[rgba(255,255,255,0.07)] text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#161a1e] text-xs font-semibold transition-all active:scale-95"
+              className="px-3 py-2 rounded-control border border-rule text-ink-soft hover:text-ink hover:bg-surface text-[15px] font-semibold transition-all"
             >
               Cancel
             </button>
@@ -94,14 +94,14 @@ export const CrashRecoveryPrompt: React.FC<CrashRecoveryPromptProps> = ({
             <button
               type="button"
               onClick={() => setIsConfirming(true)}
-              className="px-4 py-2.5 rounded-[6px] border border-[rgba(255,255,255,0.07)] text-[#9aa3b0] hover:text-[#eef0f3] hover:bg-[#161a1e] text-xs font-semibold transition-all active:scale-95"
+              className="px-4 py-2.5 rounded-control border border-rule text-ink-soft hover:text-ink hover:bg-surface text-[15px] font-semibold transition-all"
             >
               Discard and start new
             </button>
             <button
               type="button"
               onClick={onSaveAsIs}
-              className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-[6px] border border-[rgba(255,255,255,0.07)] text-[#eef0f3] hover:bg-[#161a1e] text-xs font-semibold transition-all active:scale-95"
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-control border border-rule text-ink hover:bg-surface text-[15px] font-semibold transition-all"
             >
               <Save className="w-3.5 h-3.5" />
               Keep as-is
@@ -109,7 +109,7 @@ export const CrashRecoveryPrompt: React.FC<CrashRecoveryPromptProps> = ({
             <button
               type="button"
               onClick={onResume}
-              className="px-4 py-2.5 rounded-[6px] bg-[#00d4dc] hover:opacity-90 text-[#0a0c0d] font-semibold text-xs uppercase tracking-widest transition-all active:scale-[0.98]"
+              className="rounded-control bg-solid px-4 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90"
             >
               Resume this session
             </button>

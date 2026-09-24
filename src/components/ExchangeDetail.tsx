@@ -33,7 +33,8 @@ export const COVERAGE_META: Record<Coverage, { glyph: string; label: string }> =
   DEFLECTED: { glyph: "◒", label: "deflected" },
 };
 
-const capitalize = (word: string): string => (word.length === 0 ? word : word[0].toUpperCase() + word.slice(1));
+const capitalize = (word: string): string =>
+  word.length === 0 ? word : word[0].toUpperCase() + word.slice(1);
 
 /**
  * D-59's closed-header summary: a run of per-sub-ask glyphs, then a counted,
@@ -71,8 +72,14 @@ export function coverageStrip(subAsks: SubAsk[]): string {
  * that never applied would be worse than no read at all, so a `null` here
  * renders nothing: not a zero, not a placeholder.
  */
-export const ExchangeDetail: React.FC<ExchangeDetailProps> = ({ exchange, onJumpToSegment, canJump }) => {
-  const scoreRow = exchange.starApplicable ? deriveScoreRow(exchange.questionText, exchange.scoreRow) : null;
+export const ExchangeDetail: React.FC<ExchangeDetailProps> = ({
+  exchange,
+  onJumpToSegment,
+  canJump,
+}) => {
+  const scoreRow = exchange.starApplicable
+    ? deriveScoreRow(exchange.questionText, exchange.scoreRow)
+    : null;
 
   return (
     <CollapsibleSection
@@ -83,31 +90,36 @@ export const ExchangeDetail: React.FC<ExchangeDetailProps> = ({ exchange, onJump
     >
       <div className="flex flex-col gap-3">
         {exchange.questionIntent && (
-          <div className="text-[11px] text-[#6b7685] italic leading-relaxed">
+          <div className="text-[13px] text-ink-muted italic leading-relaxed measure">
             <RenderMarkdown text={exchange.questionIntent} />
           </div>
         )}
 
         <ul className="flex flex-col gap-2.5">
           {exchange.subAsks.map((subAsk, i) => (
-            <SubAskRow key={i} subAsk={subAsk} onJumpToSegment={onJumpToSegment} canJump={canJump} />
+            <SubAskRow
+              key={i}
+              subAsk={subAsk}
+              onJumpToSegment={onJumpToSegment}
+              canJump={canJump}
+            />
           ))}
         </ul>
 
         {scoreRow && (
-          <div className="flex flex-col gap-2 border-t border-[rgba(255,255,255,0.05)] pt-3">
-            <h5 className="text-xs font-semibold text-[#eef0f3]">STAR completeness</h5>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <div className="flex flex-col gap-2 border-t border-rule pt-3">
+            <h5 className="text-[15px] font-semibold text-ink">STAR completeness</h5>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[15px]">
               <ScoreField label="Situation" value={scoreRow.s} />
               <ScoreField label="Task" value={scoreRow.tE} />
               <ScoreField label="Action" value={scoreRow.a} />
               <ScoreField label="Result" value={scoreRow.rT} />
             </div>
-            <p className="text-[11px] text-[#6b7685]">
-              STAR rating: <span className="font-mono text-[#00d4dc]">{scoreRow.starRating}</span>
+            <p className="text-[13px] text-ink-muted">
+              STAR rating: <span className="font-mono text-accent">{scoreRow.starRating}</span>
             </p>
             {exchange.starNote && (
-              <div className="text-xs text-[#9aa3b0] leading-relaxed">
+              <div className="text-[15px] text-ink-soft leading-relaxed measure">
                 <RenderMarkdown text={exchange.starNote} />
               </div>
             )}
@@ -120,8 +132,8 @@ export const ExchangeDetail: React.FC<ExchangeDetailProps> = ({ exchange, onJump
 
 const ScoreField: React.FC<{ label: string; value: number }> = ({ label, value }) => (
   <div className="flex flex-col gap-0.5">
-    <span className="text-[10px] uppercase tracking-wider text-[#6b7685]">{label}</span>
-    <span className="font-mono text-[#eef0f3]">{value}</span>
+    <span className="text-xs tracking-wider text-ink-muted">{label}</span>
+    <span className="font-mono text-ink">{value}</span>
   </div>
 );
 
@@ -152,31 +164,33 @@ interface SubAskRowProps {
 const SubAskRow: React.FC<SubAskRowProps> = ({ subAsk, onJumpToSegment, canJump }) => {
   const meta = COVERAGE_META[subAsk.coverage];
   const hasVerifiedEvidence =
-    subAsk.evidenceQuote.trim().length > 0 && !subAsk.quoteUnverified && subAsk.evidenceSegmentSeq !== undefined;
+    subAsk.evidenceQuote.trim().length > 0 &&
+    !subAsk.quoteUnverified &&
+    subAsk.evidenceSegmentSeq !== undefined;
 
   return (
-    <li className="flex flex-col gap-1.5 border-t border-[rgba(255,255,255,0.05)] pt-2.5 first:border-t-0 first:pt-0">
-      <span className="flex items-start gap-2 text-xs flex-wrap">
-        <span className="text-[#00d4dc] font-mono shrink-0">{meta.glyph}</span>
-        <span className="font-semibold text-[#eef0f3]">{capitalize(meta.label)}</span>
+    <li className="flex flex-col gap-1.5 border-t border-rule pt-2.5 first:border-t-0 first:pt-0">
+      <span className="flex items-start gap-2 text-[15px] flex-wrap">
+        <span className="text-accent font-mono shrink-0">{meta.glyph}</span>
+        <span className="font-semibold text-ink">{capitalize(meta.label)}</span>
         {subAsk.source === "implied_by_jd" && (
-          <span className="text-[9px] font-mono font-semibold uppercase tracking-wider text-[#6b7685] border border-[rgba(255,255,255,0.07)] rounded-[4px] px-1.5 py-0.5">
+          <span className="text-xs font-mono font-semibold tracking-wider text-ink-muted border border-rule rounded-[3px] px-1.5 py-0.5">
             An opportunity the job description implies
           </span>
         )}
       </span>
 
-      <span className="text-sm text-white/80 leading-relaxed pl-5">{subAsk.text}</span>
+      <span className="text-[15px] text-white/80 leading-relaxed pl-5 measure">{subAsk.text}</span>
 
       {subAsk.assessment && (
-        <div className="pl-5 text-xs text-[#9aa3b0] leading-relaxed">
+        <div className="pl-5 text-[15px] text-ink-soft leading-relaxed measure">
           <RenderMarkdown text={subAsk.assessment} />
         </div>
       )}
 
       {subAsk.whatAGoodAnswerWouldHaveIncluded && (
-        <div className="pl-5 text-xs text-[#6b7685] leading-relaxed">
-          <span className="font-semibold text-[#9aa3b0]">A good answer would have included: </span>
+        <div className="pl-5 text-[15px] text-ink-muted leading-relaxed measure">
+          <span className="font-semibold text-ink-soft">A good answer would have included: </span>
           <RenderMarkdown text={subAsk.whatAGoodAnswerWouldHaveIncluded} />
         </div>
       )}
@@ -187,19 +201,23 @@ const SubAskRow: React.FC<SubAskRowProps> = ({ subAsk, onJumpToSegment, canJump 
             type="button"
             onClick={() => onJumpToSegment(subAsk.evidenceSegmentSeq as number)}
             title="Jump to this line in the transcript"
-            className="text-left text-xs text-[#9aa3b0] italic leading-relaxed pl-5 rounded-[4px] -ml-1 pr-1 transition-colors hover:bg-[rgba(0,212,220,0.08)] hover:text-[#eef0f3] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00d4dc]"
+            className="text-left text-[15px] text-ink-soft italic leading-relaxed pl-5 rounded-[3px] -ml-1 pr-1 transition-colors hover:bg-accent/10 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent measure"
           >
-            <span className="font-mono text-[#00d4dc] not-italic">[{formatElapsed(subAsk.evidenceStartMs ?? 0)}]</span>{" "}
+            <span className="font-mono text-accent not-italic">
+              [{formatElapsed(subAsk.evidenceStartMs ?? 0)}]
+            </span>{" "}
             "{subAsk.evidenceQuote}"
           </button>
         ) : (
-          <span className="text-xs text-[#9aa3b0] italic leading-relaxed pl-5">
-            <span className="font-mono text-[#00d4dc] not-italic">[{formatElapsed(subAsk.evidenceStartMs ?? 0)}]</span>{" "}
+          <span className="text-[15px] text-ink-soft italic leading-relaxed pl-5 measure">
+            <span className="font-mono text-accent not-italic">
+              [{formatElapsed(subAsk.evidenceStartMs ?? 0)}]
+            </span>{" "}
             "{subAsk.evidenceQuote}"
           </span>
         )
       ) : subAsk.quoteUnverified ? (
-        <span className="text-[11px] text-amber-500 pl-5">
+        <span className="text-[13px] text-warn pl-5">
           No quotable evidence for this was found in the transcript.
         </span>
       ) : null}

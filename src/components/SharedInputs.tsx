@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { FileCheck2, PencilLine } from "lucide-react";
+import { Check, PencilLine, Upload } from "lucide-react";
 import { FileUploader } from "./FileUploader";
 import { SharedContext } from "../types";
 
@@ -8,49 +8,55 @@ interface SharedInputsProps {
   onChange: (patch: Partial<SharedContext>) => void;
 }
 
+const field =
+  "w-full rounded-control border border-rule bg-sunken px-3.5 py-3 text-[15px] text-ink " +
+  "outline-none transition-colors placeholder:text-ink-muted hover:border-rule-strong " +
+  "focus:border-accent focus:bg-surface";
+
 /**
- * The single place a candidate enters their details.
+ * Step one: the document everything else reads.
  *
- * Everything below on the page reads from this one context — the resume is
- * uploaded exactly once per session and reused by all three tools.
+ * This is also the page's opening image. The subject of this whole tool is a
+ * single sheet of paper being marked up, so the first thing on screen is that
+ * sheet — and it is the control that starts the work, not a picture of one.
  */
 export const SharedInputs: React.FC<SharedInputsProps> = ({ context, onChange }) => {
   const [pasteMode, setPasteMode] = useState(false);
 
-  const resumeLoaded = context.resumeText.trim().length > 0;
+  const resumeText = context.resumeText.trim();
+  const resumeLoaded = resumeText.length > 0;
 
   return (
-    <section
-      id="your-details"
-      className="w-full rounded-[10px] bg-[#161a1e] border border-[rgba(255,255,255,0.07)] p-5 md:p-7 flex flex-col gap-6"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[rgba(255,255,255,0.07)] pb-4">
-        <div className="flex items-center gap-2.5">
-          <span className="px-2.5 py-0.5 text-[9px] md:text-xs font-semibold tracking-wider uppercase rounded-[4px] border text-[#00d4dc] bg-[rgba(0,212,220,0.08)] border-[rgba(0,212,220,0.2)]">
-            Step 1
+    <section id="your-details" aria-labelledby="your-details-title" className="flex flex-col gap-8">
+      <header className="relative">
+        <div
+          aria-hidden="true"
+          className="mb-5 flex items-baseline gap-3 md:absolute md:-left-40 md:top-1 md:mb-0 md:w-32 md:flex-col md:items-start md:gap-1"
+        >
+          <span className="tnum font-mono text-[26px] font-medium leading-none text-accent">
+            01
           </span>
-          <h2 className="text-base md:text-lg font-medium tracking-tight text-[#eef0f3]">
-            Your details
-          </h2>
+          <span className="label">Intake</span>
         </div>
-        <p className="text-[10px] md:text-xs text-[#6b7685]">
-          Entered once — all three tools below use it
+        <h2 id="your-details-title" className="display text-[34px] md:text-[44px]">
+          {resumeLoaded ? "Your document." : "Start with your resume."}
+        </h2>
+        <p className="measure mt-4 text-base leading-relaxed text-ink-soft">
+          Add it once. Every step below reads this one document.
         </p>
-      </div>
+      </header>
 
-      {/* ── Resume ───────────────────────────────────────────────────────── */}
+      {/* ── The sheet ──────────────────────────────────────────────────── */}
       <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-[10px] md:text-xs font-semibold tracking-wider text-[#6b7685] uppercase">
-            Resume
-          </span>
+        <div className="flex items-baseline justify-between gap-4">
+          <h3 className="label">Resume</h3>
           <button
             type="button"
             onClick={() => setPasteMode(!pasteMode)}
-            className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#00d4dc] hover:underline"
+            className="inline-flex items-center gap-1.5 text-[15px] text-accent hover:underline underline-offset-4"
           >
-            <PencilLine className="w-3 h-3" />
-            {pasteMode ? "Upload a file instead" : "Paste text instead"}
+            {pasteMode ? <Upload className="w-4 h-4" /> : <PencilLine className="w-4 h-4" />}
+            {pasteMode ? "Upload a file instead" : "Paste the text instead"}
           </button>
         </div>
 
@@ -58,76 +64,78 @@ export const SharedInputs: React.FC<SharedInputsProps> = ({ context, onChange })
           <textarea
             value={context.resumeText}
             onChange={(e) => onChange({ resumeText: e.target.value, resumeFileName: "" })}
-            rows={10}
-            placeholder="Paste your full resume text here..."
-            className="w-full text-xs md:text-sm text-[#eef0f3] bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-4 focus:ring-2 focus:ring-[rgba(0,212,220,0.3)] focus:border-[#00d4dc] outline-none transition-all font-mono leading-relaxed"
+            rows={12}
+            aria-label="Resume text"
+            placeholder="Paste your full resume here."
+            className={`${field} font-mono text-[15px] leading-relaxed`}
           />
         ) : (
           <FileUploader
             id="shared_resume_upload"
             label=""
-            placeholderText="Drop your resume, or click to choose a file"
-            onTextLoaded={(text, filename) => onChange({ resumeText: text, resumeFileName: filename })}
+            placeholderText="Drop your resume here, or choose a file"
+            existing={
+              resumeLoaded
+                ? {
+                    name: context.resumeFileName || "Pasted text",
+                    chars: resumeText.length,
+                  }
+                : null
+            }
+            onTextLoaded={(text, filename) =>
+              onChange({ resumeText: text, resumeFileName: filename })
+            }
           />
         )}
 
-        {resumeLoaded && (
-          <div className="flex items-center gap-2 text-[11px] text-emerald-500 bg-[rgba(16,185,129,0.08)] border border-[rgba(16,185,129,0.2)] rounded-[6px] px-3 py-2">
-            <FileCheck2 className="w-3.5 h-3.5 shrink-0" />
-            <span>
-              Resume ready
-              {context.resumeFileName ? ` — ${context.resumeFileName}` : " — pasted text"} ·{" "}
-              {context.resumeText.trim().length.toLocaleString()} characters
-            </span>
-          </div>
+        {/* In paste mode the box itself shows nothing back, so the confirmation
+            is the only signal the text registered. In upload mode the uploader
+            already names the file and its length. */}
+        {resumeLoaded && pasteMode && (
+          <p className="flex items-center gap-2 text-[15px] text-good">
+            <Check className="w-4 h-4 shrink-0" />
+            <span className="tnum">{resumeText.length.toLocaleString()} characters ready.</span>
+          </p>
         )}
       </div>
 
-      {/* ── Job description ──────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-2">
-        <label
-          htmlFor="shared_jd"
-          className="text-[10px] md:text-xs font-semibold tracking-wider text-[#6b7685] uppercase"
-        >
-          Job description
-          <span className="normal-case tracking-normal font-normal text-[#6b7685]/70">
-            {" "}
-            — needed by Resume Audit and Interview Prep
-          </span>
-        </label>
-        <textarea
-          id="shared_jd"
-          value={context.jobDescription}
-          onChange={(e) => onChange({ jobDescription: e.target.value })}
-          rows={6}
-          placeholder="Paste the full job description you're applying for..."
-          className="w-full text-xs md:text-sm text-[#eef0f3] bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-4 focus:ring-2 focus:ring-[rgba(0,212,220,0.3)] focus:border-[#00d4dc] outline-none transition-all leading-relaxed"
-        />
-      </div>
-
-      {/* ── Position applied for ─────────────────────────────────────────── */}
-      <div className="flex flex-col gap-2">
-        <label
-          htmlFor="shared_position"
-          className="text-[10px] md:text-xs font-semibold tracking-wider text-[#6b7685] uppercase"
-        >
-          Position applied for
-          <span className="normal-case tracking-normal font-normal text-[#6b7685]/70">
-            {" "}
-            — optional; inferred from the job description if left blank
-          </span>
-        </label>
-        <input
-          id="shared_position"
-          type="text"
-          value={context.appliedPosition}
-          onChange={(e) => onChange({ appliedPosition: e.target.value })}
-          placeholder="e.g. Senior Frontend Engineer"
-          className="w-full text-xs md:text-sm text-[#eef0f3] bg-[#1c2128] border border-[rgba(255,255,255,0.07)] rounded-[8px] p-3 focus:ring-2 focus:ring-[rgba(0,212,220,0.3)] focus:border-[#00d4dc] outline-none transition-all"
-        />
-        <p className="text-[10px] text-[#6b7685]">
-          Your education is read straight from your resume — no need to enter it again.
+      {/* ── What it is being measured against ──────────────────────────── */}
+      <div className="flex flex-col gap-6 border-t border-rule pt-8">
+        <p className="text-[15px] text-ink-soft measure">
+          Used by the audit and interview prep. The AI check doesn't need it.
         </p>
+
+        <div className="flex flex-col gap-2">
+          <label htmlFor="shared_jd" className="label">
+            Job description
+          </label>
+          <textarea
+            id="shared_jd"
+            value={context.jobDescription}
+            onChange={(e) => onChange({ jobDescription: e.target.value })}
+            rows={7}
+            placeholder="Paste the full job posting you are applying for."
+            className={`${field} leading-relaxed`}
+          />
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <label htmlFor="shared_position" className="label">
+            Position applied for
+          </label>
+          <input
+            id="shared_position"
+            type="text"
+            value={context.appliedPosition}
+            onChange={(e) => onChange({ appliedPosition: e.target.value })}
+            placeholder="Senior Frontend Engineer"
+            aria-describedby="shared_position_help"
+            className={`${field} max-w-md`}
+          />
+          <p id="shared_position_help" className="text-sm text-ink-muted">
+            Optional — taken from the job description if left blank.
+          </p>
+        </div>
       </div>
     </section>
   );
