@@ -2,6 +2,12 @@ import React from "react";
 import { AlertTriangle, Lock, RefreshCw, Sparkles } from "lucide-react";
 import type { FeedbackDocument, FeedbackStage, SharedContext, TranscriptSegment } from "../types";
 import { RenderMarkdown } from "../lib/renderMarkdown";
+import {
+  deriveSilentGaps,
+  deriveMissedFollowUps,
+  deriveJdCoverage,
+  filterEvidencedResumeFindings,
+} from "../lib/feedbackRollups";
 
 export interface LiveInterviewFeedbackProps {
   sessionId: string;
@@ -50,10 +56,20 @@ const STAGE_COPY: Record<FeedbackStage, string> = {
 };
 
 /**
- * Tool 4's feedback document surface (D-58/D-61) — the tracer slice only
- * renders a flat list of judged exchanges; the ordered rollups (silent gaps,
- * missed follow-ups, resume consistency, JD coverage) land in later plans.
+ * Tool 4's feedback surface (D-58/D-61): renders the assembled
+ * `FeedbackDocument` as one scrolling record in D-58's fixed order — silent
+ * gaps, missed follow-ups, resume consistency, job-description coverage,
+ * strengths / priority improvements, then the exchange-by-exchange detail —
+ * with no tab strip and no way to reach the detail without passing the gaps.
  * Mounted by `LiveInterview.tsx`, never inlined into it (D-61).
+ *
+ * The gaps are the product: `deriveSilentGaps` runs first, before anything
+ * else in the six sections, because LIVE-17 says the record *opens with* the
+ * unanswered sub-asks. `deriveMissedFollowUps` is the same D-65 detection
+ * read from the other direction. `filterEvidencedResumeFindings` runs here
+ * (not upstream) because this is the one place in the tree that already
+ * holds both the stored resume-consistency findings and the live `segments`
+ * D-66's matcher needs — an unverifiable finding is never rendered (D-69).
  *
  * D-70: this is the only surface in Tool 4 that gates on the API key, resume
  * and job description — recording and transcription stay keyless and
@@ -175,76 +191,268 @@ export const LiveInterviewFeedback: React.FC<LiveInterviewFeedbackProps> = ({
           )}
 
           {document && (
-            <div className="flex flex-col gap-3 border-t border-[rgba(255,255,255,0.07)] pt-4">
+            <div className="flex flex-col gap-6 border-t border-[rgba(255,255,255,0.07)] pt-4">
               {document.exchanges.length === 0 ? (
                 <p className="text-sm text-[#9aa3b0]">
                   No substantive questions were found in this take.
                 </p>
               ) : (
-                document.exchanges
-                  .slice()
-                  .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0) || a.exchangeIndex - b.exchangeIndex)
-                  .map((exchange) => (
-                    <div
-                      key={exchange.exchangeIndex}
-                      className="bg-[#161a1e] border border-[rgba(255,255,255,0.07)] rounded-[6px] p-4 flex flex-col gap-3"
-                    >
-                      <p className="text-sm font-semibold text-[#eef0f3] leading-relaxed">
-                        {exchange.questionText}
-                      </p>
-                      {exchange.questionIntent && (
-                        <p className="text-[11px] text-[#6b7685] italic leading-relaxed">
-                          {exchange.questionIntent}
-                        </p>
-                      )}
+                <>
+                  {/* Section 1 (D-58, first — LIVE-17's headline): silent gaps. */}
+                  <section className="flex flex-col gap-2.5">
+                    <h4 className="text-sm font-semibold text-[#eef0f3]">Silent gaps</h4>
+                    <p className="text-xs text-[#6b7685] leading-relaxed">
+                      Things the interviewer asked outright that the answer did not cover.
+                    </p>
+                    <SubAskRollupList
+                      items={deriveSilentGaps(document)}
+                      emptyText="Every sub-ask the interviewer asked was addressed."
+                    />
+                  </section>
 
-                      <ul className="flex flex-col gap-2.5">
-                        {exchange.subAsks.map((subAsk, i) => (
-                          <li
-                            key={i}
-                            className="flex flex-col gap-1 border-t border-[rgba(255,255,255,0.05)] pt-2.5 first:border-t-0 first:pt-0"
-                          >
-                            <span className="flex items-start gap-2 text-xs">
-                              <span className="text-[#00d4dc] font-mono shrink-0">
-                                {COVERAGE_GLYPH[subAsk.coverage] ?? "○"}
-                              </span>
-                              <span className="font-semibold text-[#eef0f3]">
-                                {COVERAGE_LABEL[subAsk.coverage] ?? subAsk.coverage}
-                              </span>
-                              {subAsk.source === "implied_by_jd" && (
-                                <span className="text-[9px] font-mono font-semibold uppercase tracking-wider text-[#6b7685] border border-[rgba(255,255,255,0.07)] rounded-[4px] px-1.5 py-0.5">
-                                  Implied by JD
+                  {/* Section 2 (D-58, D-65): missed follow-ups — feedback for the
+                      interviewer, never framed as a question the candidate dodged. */}
+                  <section className="flex flex-col gap-2.5">
+                    <h4 className="text-sm font-semibold text-[#eef0f3]">Missed follow-ups</h4>
+                    <p className="text-xs text-[#6b7685] leading-relaxed">
+                      What the job description implies the interviewer should have probed and
+                      did not.
+                    </p>
+                    <SubAskRollupList
+                      items={deriveMissedFollowUps(document)}
+                      emptyText="No follow-up implied by the job description was missed."
+                    />
+                  </section>
+
+                  {/* Section 3 (D-58, D-69): resume consistency. Every finding here has
+                      already passed filterEvidencedResumeFindings — a finding whose
+                      spoken side does not match the stored transcript verbatim never
+                      reaches this render. */}
+                  <section className="flex flex-col gap-2.5">
+                    <h4 className="text-sm font-semibold text-[#eef0f3]">Resume consistency</h4>
+                    <p className="text-xs text-[#6b7685] leading-relaxed">
+                      Things to reconcile, not discrepancies proven — the transcript is
+                      machine-generated and may have misheard a word, and a resume may simply
+                      be out of date.
+                    </p>
+                    {(() => {
+                      const evidencedFindings = filterEvidencedResumeFindings(
+                        document.resumeConsistency,
+                        segments
+                      );
+                      return evidencedFindings.length === 0 ? (
+                        <p className="text-sm text-[#9aa3b0]">
+                          Nothing said contradicted the resume.
+                        </p>
+                      ) : (
+                        <ul className="flex flex-col gap-2.5">
+                          {evidencedFindings.map((finding, i) => (
+                            <li
+                              key={i}
+                              className="flex flex-col gap-2 bg-[#161a1e] border border-[rgba(255,255,255,0.07)] rounded-[6px] p-3"
+                            >
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[#6b7685]">
+                                    Said
+                                  </span>
+                                  <span className="text-sm text-white/80 italic leading-relaxed">
+                                    "{finding.spokenQuote}"
+                                  </span>
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[#6b7685]">
+                                    Resume says
+                                  </span>
+                                  <span className="text-sm text-white/80 italic leading-relaxed">
+                                    "{finding.resumeLine}"
+                                  </span>
+                                </div>
+                              </div>
+                              {finding.note && (
+                                <span className="text-xs text-[#9aa3b0] leading-relaxed">
+                                  {finding.note}
                                 </span>
                               )}
-                            </span>
-                            <span className="text-sm text-white/80 leading-relaxed pl-5">
-                              {subAsk.text}
-                            </span>
-                            {subAsk.evidenceQuote && (
-                              <span className="text-xs text-[#9aa3b0] italic leading-relaxed pl-5">
-                                "{subAsk.evidenceQuote}"
-                              </span>
-                            )}
-                            {subAsk.quoteUnverified && (
-                              <span className="text-[11px] text-amber-500 pl-5">
-                                No quotable evidence was found for this in the transcript.
-                              </span>
-                            )}
-                            {subAsk.assessment && (
-                              <div className="pl-5 text-xs text-[#9aa3b0] leading-relaxed">
-                                <RenderMarkdown text={subAsk.assessment} />
-                              </div>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
+                            </li>
+                          ))}
+                        </ul>
+                      );
+                    })()}
+                  </section>
+
+                  {/* Section 4 (D-58, LIVE-19): JD coverage. */}
+                  <section className="flex flex-col gap-2.5">
+                    <h4 className="text-sm font-semibold text-[#eef0f3]">JD coverage</h4>
+                    <p className="text-xs text-[#6b7685] leading-relaxed">
+                      Job-description requirements nothing in the interview evidenced.
+                    </p>
+                    {(() => {
+                      const uncoveredRequirements = deriveJdCoverage(document);
+                      return uncoveredRequirements.length === 0 ? (
+                        <p className="text-sm text-[#9aa3b0]">
+                          Every requirement drawn from the job description was evidenced.
+                        </p>
+                      ) : (
+                        <ul className="flex flex-col gap-1.5">
+                          {uncoveredRequirements.map((item, i) => (
+                            <li
+                              key={i}
+                              className="text-sm text-white/80 leading-relaxed pl-4 relative before:content-['—'] before:absolute before:left-0 before:text-[#6b7685]"
+                            >
+                              {item.requirement}
+                            </li>
+                          ))}
+                        </ul>
+                      );
+                    })()}
+                  </section>
+
+                  {/* Section 5 (D-58, D-68): strengths and priority improvements. The
+                      D-68 withheld-remark disclosure sits here, where the reader will
+                      actually see the prose it refers to. */}
+                  <section className="flex flex-col gap-3">
+                    {document.withheldRemarkCount > 0 && (
+                      <p className="text-[11px] text-amber-500 leading-relaxed">
+                        {document.withheldRemarkCount} remark
+                        {document.withheldRemarkCount === 1 ? "" : "s"} about delivery{" "}
+                        {document.withheldRemarkCount === 1 ? "was" : "were"} withheld from this
+                        record — this tool judges content only.
+                      </p>
+                    )}
+                    <div className="flex flex-col gap-1.5">
+                      <h4 className="text-sm font-semibold text-[#eef0f3]">Strengths</h4>
+                      <RenderMarkdown text={document.strengths} />
                     </div>
-                  ))
+                    <div className="flex flex-col gap-1.5">
+                      <h4 className="text-sm font-semibold text-[#eef0f3]">
+                        Priority improvements
+                      </h4>
+                      <RenderMarkdown text={document.priorityImprovements} />
+                    </div>
+                  </section>
+
+                  {/* Section 6 (D-58, last): exchange-by-exchange detail. Plan 06-05
+                      replaces this section's body with `ExchangeDetail`; the heading,
+                      ordering position, and props boundary stay in place so that
+                      replacement is a body swap rather than a restructure. */}
+                  <section className="flex flex-col gap-3">
+                    <h4 className="text-sm font-semibold text-[#eef0f3]">
+                      Exchange-by-exchange detail
+                    </h4>
+                    {document.exchanges
+                      .slice()
+                      .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0) || a.exchangeIndex - b.exchangeIndex)
+                      .map((exchange) => (
+                        <div
+                          key={exchange.exchangeIndex}
+                          className="bg-[#161a1e] border border-[rgba(255,255,255,0.07)] rounded-[6px] p-4 flex flex-col gap-3"
+                        >
+                          <p className="text-sm font-semibold text-[#eef0f3] leading-relaxed">
+                            {exchange.questionText}
+                          </p>
+                          {exchange.questionIntent && (
+                            <p className="text-[11px] text-[#6b7685] italic leading-relaxed">
+                              {exchange.questionIntent}
+                            </p>
+                          )}
+
+                          <ul className="flex flex-col gap-2.5">
+                            {exchange.subAsks.map((subAsk, i) => (
+                              <li
+                                key={i}
+                                className="flex flex-col gap-1 border-t border-[rgba(255,255,255,0.05)] pt-2.5 first:border-t-0 first:pt-0"
+                              >
+                                <span className="flex items-start gap-2 text-xs">
+                                  <span className="text-[#00d4dc] font-mono shrink-0">
+                                    {COVERAGE_GLYPH[subAsk.coverage] ?? "○"}
+                                  </span>
+                                  <span className="font-semibold text-[#eef0f3]">
+                                    {COVERAGE_LABEL[subAsk.coverage] ?? subAsk.coverage}
+                                  </span>
+                                  {subAsk.source === "implied_by_jd" && (
+                                    <span className="text-[9px] font-mono font-semibold uppercase tracking-wider text-[#6b7685] border border-[rgba(255,255,255,0.07)] rounded-[4px] px-1.5 py-0.5">
+                                      Implied by JD
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="text-sm text-white/80 leading-relaxed pl-5">
+                                  {subAsk.text}
+                                </span>
+                                {subAsk.evidenceQuote && (
+                                  <span className="text-xs text-[#9aa3b0] italic leading-relaxed pl-5">
+                                    "{subAsk.evidenceQuote}"
+                                  </span>
+                                )}
+                                {subAsk.quoteUnverified && (
+                                  <span className="text-[11px] text-amber-500 pl-5">
+                                    No quotable evidence was found for this in the transcript.
+                                  </span>
+                                )}
+                                {subAsk.assessment && (
+                                  <div className="pl-5 text-xs text-[#9aa3b0] leading-relaxed">
+                                    <RenderMarkdown text={subAsk.assessment} />
+                                  </div>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                  </section>
+                </>
               )}
             </div>
           )}
         </>
       )}
     </div>
+  );
+};
+
+/**
+ * The shared row renderer for D-58's Section 1 (silent gaps) and Section 2
+ * (missed follow-ups) — `SilentGap` and `MissedFollowUp` from
+ * `feedbackRollups.ts` carry the identical shape and render identically;
+ * only the section-level framing text and the `emptyText` sentence differ by
+ * call site. Coverage is distinguished by glyph plus text (D-59), never by
+ * colour alone.
+ */
+interface SubAskRollupItem {
+  exchangeIndex: number;
+  questionText: string;
+  subAskText: string;
+  coverage: string;
+}
+
+const SubAskRollupList: React.FC<{ items: SubAskRollupItem[]; emptyText: string }> = ({
+  items,
+  emptyText,
+}) => {
+  if (items.length === 0) {
+    return <p className="text-sm text-[#9aa3b0]">{emptyText}</p>;
+  }
+  return (
+    <ul className="flex flex-col gap-2">
+      {items.map((item, i) => (
+        <li
+          key={i}
+          className="flex flex-col gap-1 bg-[#161a1e] border border-[rgba(255,255,255,0.07)] rounded-[6px] p-3"
+        >
+          <span className="flex items-center gap-2 text-xs">
+            <span className="text-[#00d4dc] font-mono shrink-0">
+              {COVERAGE_GLYPH[item.coverage] ?? "○"}
+            </span>
+            <span className="font-semibold text-[#eef0f3]">
+              {COVERAGE_LABEL[item.coverage] ?? item.coverage}
+            </span>
+          </span>
+          <span className="text-[11px] text-[#6b7685] italic leading-relaxed">
+            {item.questionText}
+          </span>
+          <span className="text-sm text-white/80 leading-relaxed">{item.subAskText}</span>
+        </li>
+      ))}
+    </ul>
   );
 };

@@ -58,7 +58,25 @@ import {
   SCREENED_FIELD_PATHS,
   WITHHELD_REMARK_MARKER,
 } from "../src/lib/deliveryScreen";
-import type { TagPress, RecordingSession, AudioChunkMeta, TagSpan, TranscriptSegment } from "../src/types";
+import {
+  deriveSilentGaps,
+  deriveMissedFollowUps,
+  deriveJdCoverage,
+  deriveScoreRow,
+  filterEvidencedResumeFindings,
+} from "../src/lib/feedbackRollups";
+import type {
+  TagPress,
+  RecordingSession,
+  AudioChunkMeta,
+  TagSpan,
+  TranscriptSegment,
+  Coverage,
+  SubAsk,
+  SubAskSource,
+  Exchange,
+  FeedbackDocument,
+} from "../src/types";
 
 // audioElapsedMs(clockOrigin, pausedMs, offsetMs) === performance.now() - clockOrigin - pausedMs + offsetMs.
 // Asserted algebraically: with clockOrigin === performance.now() at call time
@@ -1837,6 +1855,302 @@ function makeSegment(overrides: Partial<TranscriptSegment> & { seq: number }): T
     uncoveredFields,
     [],
     `A new free-text field was added to LIVE_FEEDBACK_SCHEMA (${uncoveredFields.join(", ")}) without deciding whether it is screened for delivery commentary — a delivery remark can now slip through in a field nobody checked. Add it to SCREENED_FIELD_PATHS in src/lib/deliveryScreen.ts, or to excludedStringFields above with a one-line reason.`
+  );
+}
+
+// Phase 6 (LIVE-17/18 Wave 0 gate): src/lib/feedbackRollups.ts — D-58's
+// silent-gaps/missed-follow-ups derivation, LIVE-19's JD-coverage set
+// difference, the D-69 resume-evidence gate, and the D-73 ScoreRow
+// derivation. `makeSegment` above (05-02's fixture helper) is reused for the
+// quote fixtures below, per this task's own action text.
+
+function makeSubAsk(
+  overrides: Partial<SubAsk> & { text: string; source: SubAskSource; coverage: Coverage }
+): SubAsk {
+  return {
+    evidenceQuote: "",
+    quoteUnverified: false,
+    assessment: "",
+    whatAGoodAnswerWouldHaveIncluded: "",
+    ...overrides,
+  };
+}
+
+function makeExchange(overrides: Partial<Exchange> & { exchangeIndex: number; subAsks: SubAsk[] }): Exchange {
+  return {
+    questionText: `Question ${overrides.exchangeIndex}`,
+    questionIntent: "",
+    answerText: "",
+    starApplicable: false,
+    starNote: "",
+    ...overrides,
+  };
+}
+
+// One fixture rich enough to exercise every case at once: three exchanges
+// declared out of exchangeIndex order (proving the internal sort), each
+// carrying a mix of asked/implied sub-asks across all four Coverage values,
+// a jdCoverage array with both evidenced and un-evidenced entries, and a
+// resumeConsistency array with one verbatim-matching finding, one finding
+// whose quote matches nothing, and one finding with an empty resumeLine.
+const feedbackExchangeZero = makeExchange({
+  exchangeIndex: 0,
+  questionText: "Q-zero",
+  subAsks: [
+    makeSubAsk({ text: "asked-addressed-0", source: "asked", coverage: "ADDRESSED" }),
+    makeSubAsk({ text: "asked-partial-0", source: "asked", coverage: "PARTIAL" }),
+    makeSubAsk({ text: "implied-addressed-0", source: "implied_by_jd", coverage: "ADDRESSED" }),
+    makeSubAsk({ text: "implied-notaddressed-0", source: "implied_by_jd", coverage: "NOT_ADDRESSED" }),
+  ],
+});
+
+const feedbackExchangeOne = makeExchange({
+  exchangeIndex: 1,
+  questionText: "Q-one",
+  subAsks: [
+    makeSubAsk({ text: "asked-notaddressed-1", source: "asked", coverage: "NOT_ADDRESSED" }),
+    makeSubAsk({ text: "asked-deflected-1", source: "asked", coverage: "DEFLECTED" }),
+    makeSubAsk({ text: "implied-partial-1", source: "implied_by_jd", coverage: "PARTIAL" }),
+  ],
+});
+
+const feedbackExchangeTwo = makeExchange({
+  exchangeIndex: 2,
+  questionText: "Q-two",
+  subAsks: [
+    makeSubAsk({ text: "asked-addressed-2", source: "asked", coverage: "ADDRESSED" }),
+    makeSubAsk({ text: "implied-deflected-2", source: "implied_by_jd", coverage: "DEFLECTED" }),
+  ],
+});
+
+const feedbackFixtureSegments: TranscriptSegment[] = [
+  makeSegment({ seq: 900, text: "I led the payments team for two years." }),
+];
+
+const feedbackFixtureDoc: FeedbackDocument = {
+  sessionId: "fixture",
+  generatedAt: 0,
+  transcriptFingerprint: fingerprintSegments(feedbackFixtureSegments),
+  // Deliberately out of exchangeIndex order, to prove the internal sort.
+  exchanges: [feedbackExchangeTwo, feedbackExchangeZero, feedbackExchangeOne],
+  resumeConsistency: [
+    {
+      spokenQuote: "I led the payments team for two years.",
+      resumeLine: "Led payments team for three years",
+      note: "duration to reconcile",
+    },
+    {
+      spokenQuote: "nothing like this was ever said",
+      resumeLine: "Led payments team for three years",
+      note: "unverifiable — must be dropped",
+    },
+    {
+      spokenQuote: "I led the payments team for two years.",
+      resumeLine: "",
+      note: "no resume line — must be dropped",
+    },
+  ],
+  jdCoverage: [
+    { requirement: "Kubernetes", evidenced: false },
+    { requirement: "On-call rotations", evidenced: true },
+    { requirement: "Terraform", evidenced: false },
+  ],
+  strengths: "",
+  priorityImprovements: "",
+  withheldRemarkCount: 0,
+};
+
+// 1. Content and ordering: deriveSilentGaps/deriveMissedFollowUps return
+// exactly the expected sub-asks, in exchangeIndex-then-position order, even
+// though the fixture's own exchanges array is out of order (LIVE-17/18
+// ordering).
+{
+  const gaps = deriveSilentGaps(feedbackFixtureDoc);
+  assert.deepEqual(
+    gaps.map((g) => g.subAskText),
+    ["asked-partial-0", "asked-notaddressed-1", "asked-deflected-1"],
+    "deriveSilentGaps must return the unaddressed asked sub-asks in exchangeIndex-then-position order"
+  );
+  assert.deepEqual(gaps.map((g) => g.exchangeIndex), [0, 1, 1]);
+
+  const followUps = deriveMissedFollowUps(feedbackFixtureDoc);
+  assert.deepEqual(
+    followUps.map((f) => f.subAskText),
+    ["implied-notaddressed-0", "implied-partial-1", "implied-deflected-2"],
+    "deriveMissedFollowUps must return the unaddressed implied sub-asks in the same order discipline"
+  );
+  assert.deepEqual(followUps.map((f) => f.exchangeIndex), [0, 1, 2]);
+}
+
+// 2. Partition (LIVE-17 adjacency): the intersection of the sub-ask texts
+// returned by deriveSilentGaps and deriveMissedFollowUps over the same
+// document is empty — asserted as a computed set intersection, not by
+// inspection, so a future change to either predicate trips it.
+{
+  const gapTexts = new Set(deriveSilentGaps(feedbackFixtureDoc).map((g) => g.subAskText));
+  const followUpTexts = new Set(deriveMissedFollowUps(feedbackFixtureDoc).map((f) => f.subAskText));
+  const intersection = [...gapTexts].filter((text) => followUpTexts.has(text));
+  assert.deepEqual(
+    intersection,
+    [],
+    "deriveSilentGaps and deriveMissedFollowUps must never share a sub-ask across the same document"
+  );
+}
+
+// 3. Empty (LIVE-17 empty, LIVE-18 empty): a document whose every asked
+// sub-ask is ADDRESSED returns [] from deriveSilentGaps; a document with no
+// implied sub-asks at all returns [] from deriveMissedFollowUps; a document
+// with zero exchanges returns [] from both. [] is a real answer the UI
+// renders a sentence for, not an error state.
+{
+  const allAskedAddressed: FeedbackDocument = {
+    ...feedbackFixtureDoc,
+    exchanges: [
+      makeExchange({
+        exchangeIndex: 0,
+        subAsks: [makeSubAsk({ text: "only-asked", source: "asked", coverage: "ADDRESSED" })],
+      }),
+    ],
+  };
+  assert.deepEqual(
+    deriveSilentGaps(allAskedAddressed),
+    [],
+    "a document whose every asked sub-ask is ADDRESSED must return [] from deriveSilentGaps"
+  );
+
+  const noImplied: FeedbackDocument = {
+    ...feedbackFixtureDoc,
+    exchanges: [
+      makeExchange({
+        exchangeIndex: 0,
+        subAsks: [makeSubAsk({ text: "only-asked-2", source: "asked", coverage: "NOT_ADDRESSED" })],
+      }),
+    ],
+  };
+  assert.deepEqual(
+    deriveMissedFollowUps(noImplied),
+    [],
+    "a document with no implied sub-asks at all must return [] from deriveMissedFollowUps"
+  );
+
+  const zeroExchanges: FeedbackDocument = { ...feedbackFixtureDoc, exchanges: [] };
+  assert.deepEqual(deriveSilentGaps(zeroExchanges), []);
+  assert.deepEqual(deriveMissedFollowUps(zeroExchanges), []);
+}
+
+// 4. Ordering determinism and input immutability (LIVE-17/18 ordering):
+// holds when the input exchanges array is shuffled, is deeply equal across
+// two consecutive calls, and never mutates the input document's exchanges
+// array order.
+{
+  const shuffled: FeedbackDocument = {
+    ...feedbackFixtureDoc,
+    exchanges: [feedbackExchangeOne, feedbackExchangeTwo, feedbackExchangeZero],
+  };
+  const first = deriveSilentGaps(shuffled);
+  const second = deriveSilentGaps(shuffled);
+  assert.deepEqual(first, second, "two calls on the same input must produce deeply equal output");
+  assert.deepEqual(
+    first.map((g) => g.exchangeIndex),
+    [0, 1, 1],
+    "ordering must hold regardless of the input exchanges array's own order"
+  );
+
+  const beforeOrder = shuffled.exchanges.map((e) => e.exchangeIndex);
+  deriveSilentGaps(shuffled);
+  deriveMissedFollowUps(shuffled);
+  assert.deepEqual(
+    shuffled.exchanges.map((e) => e.exchangeIndex),
+    beforeOrder,
+    "the input document's exchanges array order must be unchanged after the call"
+  );
+}
+
+// 5. D-69 gate (LIVE-19): filterEvidencedResumeFindings returns exactly the
+// one finding whose spoken quote matches, with spokenSegmentSeq and
+// spokenStartMs populated from the matching segment; the unmatched finding
+// and the empty-resumeLine finding are both absent.
+{
+  const filtered = filterEvidencedResumeFindings(feedbackFixtureDoc.resumeConsistency, feedbackFixtureSegments);
+  assert.equal(filtered.length, 1, "exactly one finding — the verbatim-matching one — must survive the D-69 gate");
+  assert.equal(filtered[0].spokenQuote, "I led the payments team for two years.");
+  assert.equal(filtered[0].spokenSegmentSeq, 900);
+  assert.equal(filtered[0].spokenStartMs, feedbackFixtureSegments[0].startMs);
+}
+
+// 6. deriveJdCoverage (LIVE-19): returns only un-evidenced requirements,
+// preserving order; [] when everything is evidenced or the array is empty.
+{
+  const uncovered = deriveJdCoverage(feedbackFixtureDoc);
+  assert.deepEqual(
+    uncovered.map((item) => item.requirement),
+    ["Kubernetes", "Terraform"],
+    "deriveJdCoverage must return only un-evidenced requirements, preserving their original order"
+  );
+  assert.deepEqual(deriveJdCoverage({ ...feedbackFixtureDoc, jdCoverage: [] }), []);
+  assert.deepEqual(
+    deriveJdCoverage({ ...feedbackFixtureDoc, jdCoverage: [{ requirement: "X", evidenced: true }] }),
+    [],
+    "a jdCoverage array with everything evidenced must return []"
+  );
+}
+
+// 7. D-73 derivation: the worked example from Task 1's behaviour block
+// returns starRating 0.63 and competencyRating 0.5; a raw object missing one
+// field returns null; a raw object with a NaN field returns null.
+{
+  const scoreRow = deriveScoreRow("Worked example", { s: 1, tE: 0.5, a: 0.75, rT: 0.25, cS: 1, aE: 0.5, rA: 0 });
+  assert.ok(scoreRow, "a fully-populated raw score object must derive a ScoreRow, not null");
+  assert.equal(scoreRow?.starRating, 0.63);
+  assert.equal(scoreRow?.competencyRating, 0.5);
+
+  assert.equal(
+    deriveScoreRow("Missing field", { s: 1, tE: 0.5, a: 0.75, cS: 1, aE: 0.5, rA: 0 }),
+    null,
+    "a raw object missing one field must return null, not substitute zero"
+  );
+  assert.equal(
+    deriveScoreRow("NaN field", { s: 1, tE: 0.5, a: 0.75, rT: Number.NaN, cS: 1, aE: 0.5, rA: 0 }),
+    null,
+    "a raw object with a NaN field must return null"
+  );
+}
+
+// 8. Formula parity guard (D-73): src/lib/feedbackRollups.ts's starRating
+// and competencyRating expressions must stay byte-equivalent (modulo
+// whitespace) to InterviewScoringTable.tsx's own — the same static
+// text-analysis technique the dtype/filename drift guard above uses,
+// because InterviewScoringTable.tsx is a React component that cannot be
+// loaded under plain Node.
+{
+  const rollupsPath = fileURLToPath(new URL("../src/lib/feedbackRollups.ts", import.meta.url));
+  const scoringTablePath = fileURLToPath(new URL("../src/components/InterviewScoringTable.tsx", import.meta.url));
+  const rollupsSrc = readFileSync(rollupsPath, "utf8");
+  const scoringTableSrc = readFileSync(scoringTablePath, "utf8");
+
+  const extractExpression = (src: string, assignedName: string): string => {
+    const assignIdx = src.indexOf(`${assignedName} = Number(`);
+    assert.ok(assignIdx !== -1, `expected to find "${assignedName} = Number(" in the source`);
+    const closeIdx = src.indexOf(";", assignIdx);
+    assert.ok(closeIdx !== -1, `expected a terminating ";" after "${assignedName} = Number("`);
+    const numberCallIdx = src.indexOf("Number(", assignIdx);
+    return src.slice(numberCallIdx, closeIdx).replace(/\s+/g, " ").trim();
+  };
+
+  const rollupsStar = extractExpression(rollupsSrc, "starRating");
+  const scoringStar = extractExpression(scoringTableSrc, "targetRow.starRating");
+  assert.equal(
+    rollupsStar,
+    scoringStar,
+    "the Tool 4 derivation's starRating expression has drifted from the ledger's own formula (InterviewScoringTable.tsx) — a Tool-4-sourced row will silently disagree with a manually-edited one once Phase 7 wires the ledger"
+  );
+
+  const rollupsCompetency = extractExpression(rollupsSrc, "competencyRating");
+  const scoringCompetency = extractExpression(scoringTableSrc, "targetRow.competencyRating");
+  assert.equal(
+    rollupsCompetency,
+    scoringCompetency,
+    "the Tool 4 derivation's competencyRating expression has drifted from the ledger's own formula (InterviewScoringTable.tsx) — a Tool-4-sourced row will silently disagree with a manually-edited one once Phase 7 wires the ledger"
   );
 }
 
