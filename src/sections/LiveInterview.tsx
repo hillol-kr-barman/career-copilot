@@ -1843,6 +1843,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
             segments={transcriptSegments}
             context={context}
             apiKey={apiKey}
+            takeStartedAt={session.startedAt}
             document={feedbackDocument}
             stage={feedbackStage}
             error={feedbackError}

@@ -1,5 +1,5 @@
-import React from "react";
-import { AlertTriangle, Lock, RefreshCw, Sparkles } from "lucide-react";
+import React, { useState } from "react";
+import { AlertTriangle, Download, Lock, RefreshCw, Sparkles } from "lucide-react";
 import type { FeedbackDocument, FeedbackStage, SharedContext, TranscriptSegment } from "../types";
 import { RenderMarkdown } from "../lib/renderMarkdown";
 import { ExchangeDetail } from "./ExchangeDetail";
@@ -9,12 +9,22 @@ import {
   deriveJdCoverage,
   filterEvidencedResumeFindings,
 } from "../lib/feedbackRollups";
+import {
+  exportFeedbackToPDF,
+  exportFeedbackToDOCX,
+  feedbackToPlainText,
+  fileStem,
+  type FeedbackExportMeta,
+} from "../lib/exportFeedback";
+import { downloadText } from "../lib/download";
 
 export interface LiveInterviewFeedbackProps {
   sessionId: string;
   segments: TranscriptSegment[];
   context: SharedContext;
   apiKey: string;
+  /** The analysed take's own `RecordingSession.startedAt` — threaded through to `FeedbackExportMeta` (LIVE-20) so an exported file names the take it came from, not the moment it was exported. */
+  takeStartedAt: number;
   document: FeedbackDocument | null;
   stage: FeedbackStage;
   error: string;
@@ -84,6 +94,7 @@ export const LiveInterviewFeedback: React.FC<LiveInterviewFeedbackProps> = ({
   segments,
   context,
   apiKey,
+  takeStartedAt,
   document,
   stage,
   error,
@@ -101,6 +112,50 @@ export const LiveInterviewFeedback: React.FC<LiveInterviewFeedbackProps> = ({
   if (!context.jobDescription.trim()) missing.push("the job description");
 
   const isBusy = stage === "structuring" || stage === "judging";
+
+  /**
+   * LIVE-20's three export buttons. `exporting`/`exportError` are this
+   * component's own state, separate from the `stage`/`error` props the
+   * two-call Structure/Assess pipeline owns — an export failure (a client-
+   * side jsPDF/docx error, not a network call) has nothing to do with that
+   * pipeline's own retry machinery, so it gets its own small error line
+   * rather than borrowing a prop this component has no setter for.
+   */
+  const [exporting, setExporting] = useState<null | "pdf" | "docx" | "txt">(null);
+  const [exportError, setExportError] = useState("");
+
+  const handleExport = async (format: "pdf" | "docx" | "txt") => {
+    if (!document) return;
+    const meta: FeedbackExportMeta = {
+      appliedPosition: context.appliedPosition,
+      startedAt: takeStartedAt,
+      generatedAt: document.generatedAt,
+    };
+    // D-69: an export must never carry a resume-consistency finding the
+    // screen itself would not show — the same filterEvidencedResumeFindings
+    // gate Section 3 below applies at render time, applied here before any
+    // exporter ever sees the document.
+    const docForExport: FeedbackDocument = {
+      ...document,
+      resumeConsistency: filterEvidencedResumeFindings(document.resumeConsistency, segments),
+    };
+
+    setExporting(format);
+    setExportError("");
+    try {
+      if (format === "pdf") {
+        await exportFeedbackToPDF(docForExport, meta);
+      } else if (format === "docx") {
+        await exportFeedbackToDOCX(docForExport, meta);
+      } else {
+        downloadText(`${fileStem(meta)}-feedback.txt`, feedbackToPlainText(docForExport, meta));
+      }
+    } catch (err: any) {
+      setExportError(err?.message || `Failed to export the feedback document as ${format.toUpperCase()}.`);
+    } finally {
+      setExporting(null);
+    }
+  };
 
   return (
     <div className="rounded-[8px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] p-4 flex flex-col gap-4">
@@ -199,6 +254,63 @@ export const LiveInterviewFeedback: React.FC<LiveInterviewFeedbackProps> = ({
 
           {document && (
             <div className="flex flex-col gap-6 border-t border-[rgba(255,255,255,0.07)] pt-4">
+              {/* LIVE-20: export row — beneath the title, above every section
+                  below (including Section 1's silent gaps), so a reader who
+                  came only to export is not made to scroll past the whole
+                  record, and D-58's gaps still stand as the first *content*
+                  a reader who scrolls actually reaches. Rendered even for a
+                  zero-exchange document — `exportFeedback.ts`'s own
+                  zero-exchange branch produces a real, honest file rather
+                  than throwing. */}
+              <div className="flex flex-col gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleExport("pdf")}
+                    disabled={exporting !== null}
+                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-xs font-semibold uppercase tracking-widest"
+                  >
+                    {exporting === "pdf" ? (
+                      <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                    ) : (
+                      <Download className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{exporting === "pdf" ? "Preparing…" : "PDF"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExport("docx")}
+                    disabled={exporting !== null}
+                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-[6px] bg-[rgba(0,212,220,0.08)] hover:bg-[rgba(0,212,220,0.14)] border border-[rgba(0,212,220,0.25)] text-[#00d4dc] transition-all active:scale-[0.98] disabled:opacity-50 text-xs font-semibold uppercase tracking-widest"
+                  >
+                    {exporting === "docx" ? (
+                      <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                    ) : (
+                      <Download className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{exporting === "docx" ? "Preparing…" : "Word"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExport("txt")}
+                    disabled={exporting !== null}
+                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-[6px] border border-[rgba(255,255,255,0.07)] bg-[#161a1e] text-[#9aa3b0] hover:text-[#eef0f3] transition-all active:scale-[0.98] disabled:opacity-50 text-xs font-semibold uppercase tracking-widest"
+                  >
+                    {exporting === "txt" ? (
+                      <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                    ) : (
+                      <Download className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{exporting === "txt" ? "Preparing…" : "Plain text"}</span>
+                  </button>
+                </div>
+                {exportError && (
+                  <p className="text-xs text-red-400" role="alert">
+                    {exportError}
+                  </p>
+                )}
+              </div>
+
               {document.exchanges.length === 0 ? (
                 <p className="text-sm text-[#9aa3b0]">
                   No substantive questions were found in this take.
