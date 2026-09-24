@@ -43,7 +43,7 @@ These are architectural commitments, enforced in code rather than promised in co
 
 **Delivery is never scored.** The feedback document judges *what was said and how completely it answered the question* — never accent, fluency, pace, filler words, or confidence. Scoring delivery would discriminate against non-native and disabled candidates, so it is stripped **inside the route handler**, between the model response and the HTTP response, where no client can skip it. When a remark is removed, the response says so rather than silently shortening.
 
-**Recording requires consent.** Live Interview is gated behind a two-party consent notice that is re-taken before every take, and the interface states that consent law varies by jurisdiction.
+**Recording requires consent.** Live Interview is gated behind a consent notice that is re-taken before every take, and cannot be continued until the operator affirms it — the checkbox is never pre-ticked. The notice itself is one line; the full disclosure of what is recorded, kept and deleted sits behind an expander in the same panel, rather than on a separate page the operator would have to leave the setup to read.
 
 ---
 

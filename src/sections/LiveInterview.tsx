@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { ToolSection } from "../components/ToolSection";
 import { ConsentGate } from "../components/ConsentGate";
-import { RoleToggle } from "../components/RoleToggle";
 import { RecordingControls } from "../components/RecordingControls";
 import { CrashRecoveryPrompt } from "../components/CrashRecoveryPrompt";
 import { RecordingDownloads, formatStartedAt } from "../components/RecordingDownloads";
@@ -81,6 +80,21 @@ import type { RecordingWarning } from "../components/RecordingControls";
 const RECOVERY_FAILED_COPY =
   "This recording couldn't be recovered — the saved data may be corrupted or incomplete. It has been discarded automatically.";
 
+/**
+ * The operator's side of the table, recorded on every take.
+ *
+ * A constant rather than a control (superseding D-24's toggle): this tool is
+ * run by the person conducting the interview, so the operator is always the
+ * interviewer and the other voice is always the candidate. Asking was an extra
+ * decision before recording whose only correct answer was this one.
+ *
+ * The field itself stays on `RecordingSession` and on the tag-track sidecar.
+ * Takes recorded while the toggle existed keep whatever they were stored with,
+ * so an older take still exports the side it was actually recorded under —
+ * dropping the field would rewrite that history and invalidate stored records.
+ */
+const DECLARED_SPEAKER: Speaker = "interviewer";
+
 interface LiveInterviewProps {
   /**
    * D-70: the shared inputs and the visitor's API key. Tool 4's capture and
@@ -140,7 +154,6 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
   // above and for the same reason — a fact about THIS take, reset at every
   // take boundary alongside hasConsented, never persisted.
   const [keepAudio, setKeepAudio] = useState(false);
-  const [declaredSpeaker, setDeclaredSpeaker] = useState<Speaker>("candidate");
 
   // D-36: the operator's chosen input device. `undefined` means the system
   // default and is never persisted — deviceIds rotate per origin and a
@@ -638,9 +651,10 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
    * "Resume this session": seeds resumeSeedRef with everything the next
    * handleBegin needs to continue the same session — its id, mimeType,
    * original start time (so a second crash still shows the true relative
-   * time), and the next sequence number — then restores the recorded
-   * declaredSpeaker and clears the prompt so the visitor reconnects their
-   * microphone from the normal idle state. A session with no readable
+   * time), and the next sequence number — then clears the prompt so the
+   * visitor reconnects their microphone from the normal idle state. The
+   * recovered take keeps the `declaredSpeaker` it was stored with; there is no
+   * longer any client state to restore it into. A session with no readable
    * chunks, or one whose sequence lookup throws, is treated as unreadable:
    * shown the recovery-failed copy, discarded, and the tool falls through to
    * a normal fresh start rather than leaving a broken prompt on screen.
@@ -670,7 +684,6 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         initialSpeaker: lastSpeaker ?? "interviewer",
       };
       setIsResumingSession(true);
-      setDeclaredSpeaker(recovered.declaredSpeaker);
       setRecoveryInfo(null);
     } catch {
       await deleteSession(recovered.sessionId);
@@ -722,8 +735,8 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
    * finished take's live-state pointer (the take itself stays in
    * `stoppedTakes`, untouched) and resets the marked speaker back to the
    * D-25 default so the next take doesn't open on the previous take's last
-   * press. `declaredSpeaker` is deliberately left alone — it describes the
-   * operator, who hasn't changed.
+   * press. The operator's own side is a constant (`DECLARED_SPEAKER`), so
+   * there is nothing to reset there.
    */
   const handleAcceptConsent = (keepAudioChoice: boolean) => {
     if (status === "stopped") {
@@ -938,7 +951,7 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
         sessionId,
         startedAt: resumeSeed?.startedAt ?? Date.now(),
         clockOrigin: clockOriginRef.current,
-        declaredSpeaker,
+        declaredSpeaker: DECLARED_SPEAKER,
         mimeType,
         keepAudio,
       });
@@ -1781,19 +1794,11 @@ export const LiveInterview: React.FC<LiveInterviewProps> = ({
           </div>
         )}
 
-        {/* D-24 declaration stays reachable while the consent gate shows, so
-            the operator can set their side before consenting (D-34). */}
-        <RoleToggle
-          declaredSpeaker={declaredSpeaker}
-          onDeclaredSpeakerChange={setDeclaredSpeaker}
-          disabled={isResumingSession || (status !== "idle" && status !== "armed")}
-        />
-
         {/* D-34: re-asked before every take, wrapping only the acquisition
             and recording controls — never the download surface below, so a
             re-ask can't hide a take that just finished (D-31). */}
         {!hasConsented ? (
-          <ConsentGate onAccept={handleAcceptConsent} declaredSpeaker={declaredSpeaker} />
+          <ConsentGate onAccept={handleAcceptConsent} />
         ) : (
           <>
             {/* D-36: only meaningful once permission is granted and a stream
