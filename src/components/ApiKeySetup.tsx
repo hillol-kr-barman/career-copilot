@@ -136,7 +136,13 @@ export const ApiKeySetup: React.FC<ApiKeySetupProps> = ({
                 worked out for you.
               </p>
 
-              <ul className="grid gap-x-8 gap-y-5 sm:grid-cols-3">
+              {/* Constrained, not full-bleed. Left to fill the 1120px shell
+                  this blew out to three columns ~440px apart holding two
+                  short lines each, while its own intro paragraph (68ch) and
+                  the key field (max-w-lg) sat at half that width — the strip
+                  read as broken rather than merely wide. Sharing `measure`
+                  with the paragraph above keeps the whole block one column. */}
+              <ul className="measure grid gap-x-8 gap-y-5 sm:grid-cols-3">
                 {PROVIDERS.map((p) => (
                   <li key={p.name} className="flex flex-col gap-1">
                     <p className="text-[15px] font-medium text-ink">{p.name}</p>

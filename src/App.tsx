@@ -175,9 +175,26 @@ export default function App() {
   const updateContext = (patch: Partial<SharedContext>) =>
     setContext((prev) => ({ ...prev, ...patch }));
 
+  /**
+   * An empty value REMOVES the entry rather than storing "".
+   *
+   * `setItem(key, "")` left the name behind holding an empty string, so
+   * "Remove this key from the browser" did not actually remove anything — and
+   * because `loadApiKey` reads `getItem(...) || getItem(legacy) || ""`, an
+   * empty string is falsy and fell straight through to the pre-v2
+   * `user_gemini_api_key`. On a browser that still held one, removing the
+   * current key resurrected the old one on the next load, which is the
+   * opposite of what the control promises. The legacy name is cleared here
+   * too, for the same reason `handleClearStoredData` clears it.
+   */
   const handleApiKeyChange = (val: string) => {
     setApiKey(val);
-    localStorage.setItem(API_KEY_STORAGE_KEY, val);
+    if (val) {
+      localStorage.setItem(API_KEY_STORAGE_KEY, val);
+    } else {
+      localStorage.removeItem(API_KEY_STORAGE_KEY);
+      localStorage.removeItem("user_gemini_api_key");
+    }
   };
 
   /**
