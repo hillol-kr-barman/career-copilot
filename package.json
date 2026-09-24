@@ -2,6 +2,27 @@
   "name": "career-copilot",
   "private": true,
   "version": "0.0.0",
+  "description": "Four tools over one resume: AI-authorship screening, callback scoring against a job description, a tailored interview question set, and evidence-backed feedback on a recorded interview. Bring your own AI key.",
+  "license": "MIT",
+  "author": "Hillol Kr Barman",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hillol-kr-barman/career-copilot.git"
+  },
+  "homepage": "https://github.com/hillol-kr-barman/career-copilot#readme",
+  "bugs": {
+    "url": "https://github.com/hillol-kr-barman/career-copilot/issues"
+  },
+  "keywords": [
+    "resume",
+    "interview-preparation",
+    "ai-detection",
+    "speech-to-text",
+    "whisper",
+    "react",
+    "express",
+    "bring-your-own-key"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
