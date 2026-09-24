@@ -27,6 +27,15 @@ export interface TranscriptViewProps {
   onMoveBoundary: (seq: number) => void;
   /** Task 2's pre-flight benchmark factor, threaded through only to distinguish "running behind as expected" from "falling further behind" in the live lag readout below. */
   realtimeFactor?: number;
+  /**
+   * D-60: the segment a feedback-document evidence quote points at, set by
+   * `LiveInterview.tsx` and cleared by it — this component only ever reacts
+   * to it and scrolls/highlights the matching line; the jump rule itself
+   * (which quote maps to which segment, when it is cleared) lives in the
+   * section, exactly as `onMoveBoundary`'s D-50 rule does. `null`/`undefined`
+   * means no highlight is active.
+   */
+  highlightSeq?: number | null;
 }
 
 /**
@@ -35,6 +44,11 @@ export interface TranscriptViewProps {
  * legibility. Follows `RecordingDownloads.tsx`'s file shape exactly — a list
  * component plus a per-item subcomponent (`TranscriptTurnRow`) — and its card
  * language.
+ *
+ * An operator reading back after Stop must never be fought for scroll
+ * position (D-56) — `highlightSeq` (D-60) is the one exception, and it only
+ * exists once a take is stopped: the effect below is a no-op while
+ * `isRecording` is true.
  */
 export const TranscriptView: React.FC<TranscriptViewProps> = ({
   turns,
@@ -44,6 +58,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
   canCorrect,
   onMoveBoundary,
   realtimeFactor,
+  highlightSeq,
 }) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -55,6 +70,26 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [turns.length, isRecording]);
+
+  // D-60: the one exception to "never fight the operator for scroll
+  // position" above, and it only exists once a take is stopped — this
+  // effect does nothing while `isRecording` is true, so the two scroll
+  // behaviours can never run in the same tick. Scrolls the inner container
+  // only (never the page) by computing the target segment's offset within
+  // it directly, rather than `scrollIntoView`, which can also nudge an
+  // outer scrollable ancestor.
+  useEffect(() => {
+    if (isRecording) return;
+    if (highlightSeq === null || highlightSeq === undefined) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    const target = container.querySelector<HTMLElement>(`[data-segment-seq="${highlightSeq}"]`);
+    if (!target) return;
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const targetTopWithinContainer = targetRect.top - containerRect.top + container.scrollTop;
+    container.scrollTop = targetTopWithinContainer - container.clientHeight / 2 + target.clientHeight / 2;
+  }, [highlightSeq, isRecording]);
 
   return (
     <div className="flex flex-col gap-3 rounded-[8px] border border-[rgba(255,255,255,0.07)] bg-[#1c2128] p-4">
@@ -105,6 +140,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
                 previousSpeaker={previousSpeaker}
                 canCorrect={canCorrect}
                 onMoveBoundary={onMoveBoundary}
+                highlightSeq={highlightSeq}
               />
             );
           })}
@@ -200,6 +236,8 @@ interface TranscriptTurnRowProps {
   /** D-51: only true once the take is stopped and has segments — gates whether this turn's lines render as buttons at all. */
   canCorrect: boolean;
   onMoveBoundary: (seq: number) => void;
+  /** D-60: the segment a feedback-document evidence quote points at. Reachable states for a highlight and `canCorrect`-true are identical (both gate on the take being stopped with segments), so only the per-segment button path below needs to render it. */
+  highlightSeq?: number | null;
 }
 
 /**
@@ -217,7 +255,13 @@ interface TranscriptTurnRowProps {
  * non-interactive text — an unusable control on every line during a live
  * take is noise, not an affordance (D-51).
  */
-const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({ turn, previousSpeaker, canCorrect, onMoveBoundary }) => {
+const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({
+  turn,
+  previousSpeaker,
+  canCorrect,
+  onMoveBoundary,
+  highlightSeq,
+}) => {
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex items-baseline gap-2">
@@ -235,17 +279,29 @@ const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({ turn, previousSpe
 
       {canCorrect ? (
         <div className="flex flex-col gap-0.5 pl-[3.25rem]">
-          {turn.segments.map((segment) => (
-            <button
-              key={segment.seq}
-              type="button"
-              onClick={() => onMoveBoundary(segment.seq)}
-              title={`Speaker changes here — the lines above become ${SPEAKER_LABEL[previousSpeaker]}`}
-              className="text-left text-sm text-[#c7ccd4] leading-relaxed rounded-[4px] -mx-1 px-1 transition-colors hover:bg-[rgba(0,212,220,0.08)] hover:text-[#eef0f3] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00d4dc]"
-            >
-              {segment.text.trim()}
-            </button>
-          ))}
+          {turn.segments.map((segment) => {
+            // D-60: a left border rule plus a background tint — a shape
+            // addition, not a colour swap alone, so it stays legible in a
+            // greyscale screenshot. Baseline carries a transparent border of
+            // the same width so the highlighted state never shifts layout.
+            const isHighlighted = segment.seq === highlightSeq;
+            return (
+              <button
+                key={segment.seq}
+                type="button"
+                data-segment-seq={segment.seq}
+                onClick={() => onMoveBoundary(segment.seq)}
+                title={`Speaker changes here — the lines above become ${SPEAKER_LABEL[previousSpeaker]}`}
+                className={`text-left text-sm text-[#c7ccd4] leading-relaxed rounded-[4px] -mx-1 px-1 border-l-2 transition-colors hover:bg-[rgba(0,212,220,0.08)] hover:text-[#eef0f3] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00d4dc] ${
+                  isHighlighted
+                    ? "border-l-[#00d4dc] bg-[rgba(0,212,220,0.12)] text-[#eef0f3]"
+                    : "border-l-transparent"
+                }`}
+              >
+                {segment.text.trim()}
+              </button>
+            );
+          })}
         </div>
       ) : (
         <p className="text-sm text-[#c7ccd4] leading-relaxed pl-[3.25rem]">
