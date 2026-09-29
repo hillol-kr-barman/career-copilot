@@ -1,5 +1,6 @@
 import React from "react";
 import { Lock } from "lucide-react";
+import { ChapterMark } from "./ChapterMark";
 
 interface ToolSectionProps {
   id: string;
@@ -41,19 +42,7 @@ export const ToolSection: React.FC<ToolSectionProps> = ({
 }) => (
   <section id={id} aria-labelledby={`${id}-title`} className="flex flex-col gap-8">
     <header className="relative">
-      {/* The chapter mark: the figure set large enough to be a landmark you
-          can find while scrolling, with the stage of work beneath it. Stacked
-          rather than run inline, so the number reads as a position and the
-          name as a caption for it. */}
-      <div
-        aria-hidden="true"
-        className="mb-5 flex items-baseline gap-3 md:absolute md:-left-40 md:top-1 md:mb-0 md:w-32 md:flex-col md:items-start md:gap-1"
-      >
-        <span className="tnum font-mono text-[26px] font-medium leading-none text-accent">
-          {step}
-        </span>
-        <span className="label">{phase}</span>
-      </div>
+      <ChapterMark step={step} phase={phase} />
 
       <h2 id={`${id}-title`} className="display text-[30px] md:text-[38px]">
         {title}

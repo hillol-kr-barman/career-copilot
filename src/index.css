@@ -33,11 +33,11 @@
   --accent-ink: #ffffff;
   --accent-wash: rgba(74, 55, 200, 0.07);
   --accent-edge: rgba(74, 55, 200, 0.24);
-  /* Filled controls are neutral, not accent: the accent is spent on signal —
-     the active step, a link, a live status — so that seeing it always means
-     something rather than just meaning "a button". */
-  --solid: #101828;
-  --solid-ink: #ffffff;
+  /* Buttons run on two tiers of one colour: a solid accent fill for the action
+     of the screen you are on (run the tool, start recording), and an accent
+     outline for moving between screens (the hero, the step pagination). An
+     inverted near-black fill used to carry the first tier, which read as a
+     grey-and-black control language sitting apart from everything else. */
   --good: #047857;
   --good-wash: rgba(4, 120, 87, 0.08);
   --warn: #b45309;
@@ -60,8 +60,6 @@
   --accent-ink: #0b0e14;
   --accent-wash: rgba(169, 156, 255, 0.11);
   --accent-edge: rgba(169, 156, 255, 0.3);
-  --solid: #e6e8ec;
-  --solid-ink: #0b0e14;
   --good: #34d399;
   --good-wash: rgba(52, 211, 153, 0.11);
   --warn: #fbbf24;
@@ -86,8 +84,6 @@
   --color-accent-ink: var(--accent-ink);
   --color-accent-wash: var(--accent-wash);
   --color-accent-edge: var(--accent-edge);
-  --color-solid: var(--solid);
-  --color-solid-ink: var(--solid-ink);
   --color-good: var(--good);
   --color-good-wash: var(--good-wash);
   --color-warn: var(--warn);
@@ -146,8 +142,25 @@ h4 {
 .display {
   font-weight: 600;
   letter-spacing: -0.034em;
-  line-height: 1.05;
   color: var(--ink);
+}
+
+/* Controls and links are set in mono.
+   It is the app's voice for anything you act on rather than read: the step
+   numbers, the section labels and the key prefixes were already mono, and
+   leaving buttons in the sans made them read as prose you happened to be able
+   to click. Mono runs a little wider, so labels here carry slightly fewer
+   characters than the sans equivalent.
+
+   Inside @layer base, not unlayered: an unlayered element rule outranks every
+   Tailwind utility, so `font-sans` on an exception would have been silently
+   ignored. In the base layer a utility still wins, which is what lets the
+   wordmark opt back out. */
+@layer base {
+  button,
+  a {
+    font-family: var(--font-mono);
+  }
 }
 
 /* Small mono apparatus — field labels and the like. Sentence case with light
@@ -163,6 +176,160 @@ h4 {
 
 .measure {
   max-width: 68ch;
+}
+
+/* The marker highlight, for the one phrase in the hero that states what the
+   product is for. This is the single place the accent is used as a fill rather
+   than as a line or a letterform — a headline phrase is signal, not a control,
+   so it does not muddy the "accent means interactive" rule the buttons keep.
+
+   box-decoration-break: clone is what makes it survive a line wrap: without
+   it the background paints as one box spanning the wrap, leaving a bar across
+   the gap instead of a highlight hugging each line. */
+.highlight {
+  background: var(--accent);
+  color: var(--accent-ink);
+  /*padding: 0.06em 0.26em;*/
+  border-radius: 8px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* The hero call to action.
+ *
+ * At rest it is an outline — ink border, accent label, no fill — so the hero's
+ * weight stays on the headline. Hover (and keyboard focus, which gets the same
+ * treatment so the two are never out of step) fills it with the accent.
+ *
+ * The arrow is the gesture: it shows at rest, walks right into place on hover,
+ * and on press carries on rightward and fades out, so the press reads as the
+ * thing leaving rather than as a button flashing.
+ *
+ * The reduced-motion block at the foot of this file flattens both transitions
+ * to ~0s, which leaves the colour and position changes intact but instant. */
+.cta {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  transition:
+    background-color 200ms ease,
+    border-color 200ms ease,
+    color 200ms ease;
+}
+
+.cta:hover,
+.cta:focus-visible {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Visible at rest, sitting slightly left of where it lands. Hover walks it
+   right into place; press carries it on out. Because it now shows at rest, the
+   button's gap is set wider (gap-3) than the resting offset, so the glyph never
+   crowds the label — at rest it sits 6px from the text, at hover 12px. */
+/* The back half of a pagination pair. No box, so it never competes with the
+   forward action beside it, but the same accent and the same arrow motion —
+   mirrored, because it travels the other way. */
+.cta-quiet {
+  color: var(--ink-soft);
+  transition: color 200ms ease;
+}
+
+.cta-quiet:hover,
+.cta-quiet:focus-visible {
+  color: var(--accent);
+}
+
+/* The downward partner of .cta-arrow, for an action that carries the reader
+   down the page rather than forward through it.
+
+   Three states, and the middle one is why this is a keyframe animation rather
+   than a transition: hover re-enters the glyph — it vanishes, reappears above
+   its resting line, and drops back down turning solid. A transition only
+   interpolates between two states, so it cannot express a reposition in the
+   middle of the move. At rest the arrow simply sits on its line, which is also
+   the animation's end state, so nothing jumps when the pointer leaves. */
+.cta-arrow-down {
+  transform: translateY(0);
+  opacity: 1;
+  transition:
+    transform 170ms cubic-bezier(0.3, 0.7, 0.3, 1),
+    opacity 170ms ease;
+}
+
+@keyframes cta-arrow-enter {
+  from {
+    transform: translateY(-9px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.cta:hover .cta-arrow-down,
+.cta:focus-visible .cta-arrow-down {
+  animation: cta-arrow-enter 300ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+/* Press carries it on down and out. `animation: none` is load-bearing: the
+   hover rule still matches while the button is held, and a running animation
+   outranks these declarations until it is cancelled. */
+.cta:active .cta-arrow-down {
+  animation: none;
+  transform: translateY(10px);
+  opacity: 0;
+}
+
+.cta-arrow-back {
+  transform: translateX(6px);
+  transition: transform 240ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.cta-quiet:hover .cta-arrow-back,
+.cta-quiet:focus-visible .cta-arrow-back {
+  transform: translateX(0);
+}
+
+.cta-arrow {
+  transform: translateX(-6px);
+  opacity: 1;
+  transition:
+    transform 240ms cubic-bezier(0.2, 0.7, 0.3, 1),
+    opacity 200ms ease;
+}
+
+.cta:hover .cta-arrow,
+.cta:focus-visible .cta-arrow {
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.cta:active .cta-arrow {
+  transform: translateX(14px);
+  opacity: 0;
+  transition-duration: 170ms;
+}
+
+/* The score tile. The tool bodies had grown their own typographic register —
+   text-4xl/5xl at font-extrabold in mono — which never appeared anywhere in the
+   shell, so a score read as if it belonged to a different product. Defined once
+   here, it sits deliberately on the display scale: mono for the figure because
+   it is data, tabular so it does not jitter as it animates, and weight 600 to
+   match every other heading rather than outweighing all of them.
+
+   Colour is left to the caller — a score is semantic, so it takes --good,
+   --warn or --mark from whatever judged it. */
+.stat {
+  font-family: var(--font-mono);
+  font-size: 2.75rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 /* Tabular figures for anything that changes in place — timers, counts,
@@ -220,6 +387,145 @@ h4 {
 
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* ── Disclosure ───────────────────────────────────────────────────────── */
+
+/* Animating to a fixed max-height needs a magic number that is wrong the moment
+   the content changes. Animating the grid row from 0fr to 1fr lets the browser
+   interpolate to the content's own height instead, whatever that turns out to
+   be. The child owns the overflow clip, because the row is what shrinks.
+
+   Written here rather than as Tailwind arbitrary values: `grid-rows-[0fr]`
+   was never emitted by the scanner, so the class toggled on the element while
+   the computed grid-template-rows never moved off its open height. */
+.disclosure {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition:
+    max-height 320ms cubic-bezier(0.3, 0.7, 0.3, 1),
+    opacity 200ms ease;
+}
+
+/* A generous cap rather than the content's exact height.
+   Two tidier approaches were tried and both failed on this panel. Animating a
+   grid row 0fr -> 1fr cannot work here: a bare `0fr` is minmax(auto, 0fr) and
+   the auto minimum pins the row open at content height, while the explicit
+   minmax(0, 1fr) that fixes that collapses the open state too, because an
+   auto-height container has no free space for an fr to claim. Measuring the
+   content with a ResizeObserver and animating to a pixel height then raced the
+   first paint, leaving the panel shut on load.
+   The cap is ~2.5x the panel's real height (about 366px), so the visible
+   movement finishes before the declared duration does — which is why the
+   easing front-loads the motion. */
+.disclosure[data-open="true"] {
+  max-height: 56rem;
+  opacity: 1;
+}
+
+/* ── View transition ──────────────────────────────────────────────────── */
+
+/* The circular theme reveal.
+ *
+ * Declared in CSS rather than started from script after `transition.ready`.
+ * That earlier arrangement lost the race: the transition's lifetime is governed
+ * by the pseudo-elements' own animations, and a script-registered animation
+ * begins a frame or more after they do, so it was cut off partway and the
+ * remaining sliver of the page snapped over instead of sweeping. Declared here,
+ * the reveal starts with the transition and ends with it.
+ *
+ * The origin and radius arrive as custom properties set on the root just before
+ * the transition begins; the fallbacks only apply if script somehow did not set
+ * them, in which case the page still changes theme from its centre. */
+@keyframes vt-theme-reveal {
+  from {
+    clip-path: circle(0px at var(--vt-x, 50%) var(--vt-y, 50%));
+  }
+  to {
+    clip-path: circle(var(--vt-r, 150%) at var(--vt-x, 50%) var(--vt-y, 50%));
+  }
+}
+
+/* The old snapshot holds completely still underneath for the whole sweep — no
+   fade. Cross-fading it would wash out the travelling edge, which is the only
+   thing the eye is actually following. */
+::view-transition-old(root) {
+  animation: none;
+  mix-blend-mode: normal;
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  mix-blend-mode: normal;
+  z-index: 2147483646;
+  /* Ease-out, not ease-in-out. The revealed area grows with the square of the
+     radius, so a linear or slow-start radius makes the sweep appear to lurch;
+     front-loading the radius keeps the apparent rate of reveal closer to even.
+     `forwards` holds the final frame so nothing flicks back before teardown. */
+  animation: vt-theme-reveal 620ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+
+/* The group's default animation interpolates the snapshot's transform and box.
+   Old and new are the same size here, so it has nothing useful to do — and
+   leaving it on both shifted the coordinate space the clip-path is measured in
+   and capped the transition's lifetime. */
+::view-transition-group(root) {
+  animation: none;
+}
+
+/* ── Theme toggle ─────────────────────────────────────────────────────── */
+
+/* One glyph, two states. Everything is driven off data-theme-state on the
+   button so the SVG stays declarative, and every transition is on transform or
+   opacity — both compositor properties, so the whole thing animates without a
+   layout pass. */
+.theme-toggle svg {
+  overflow: visible;
+  transition: transform 500ms cubic-bezier(0.34, 1.3, 0.5, 1);
+}
+
+.theme-toggle .tt-disc,
+.theme-toggle .tt-rays,
+.theme-toggle .tt-bite {
+  transform-origin: 12px 12px;
+  transition:
+    transform 500ms cubic-bezier(0.34, 1.3, 0.5, 1),
+    opacity 300ms ease;
+}
+
+/* Light: full sun. Rays out, nothing biting the disc. */
+.theme-toggle[data-theme-state="light"] .tt-rays {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.theme-toggle[data-theme-state="light"] .tt-bite {
+  transform: translate(0, 0);
+}
+
+.theme-toggle[data-theme-state="light"] .tt-disc {
+  transform: scale(1);
+}
+
+/* Dark: rays retract inward as they fade, the bite slides in from the top
+   right to carve the crescent, and the disc grows slightly to fill the space
+   the rays left behind. */
+.theme-toggle[data-theme-state="dark"] .tt-rays {
+  opacity: 0;
+  transform: scale(0.45) rotate(-45deg);
+}
+
+.theme-toggle[data-theme-state="dark"] .tt-bite {
+  transform: translate(-9px, 1px);
+}
+
+.theme-toggle[data-theme-state="dark"] .tt-disc {
+  transform: scale(1.12);
+}
+
+.theme-toggle[data-theme-state="dark"] svg {
+  transform: rotate(-20deg);
 }
 
 /* ── Motion ───────────────────────────────────────────────────────────── */

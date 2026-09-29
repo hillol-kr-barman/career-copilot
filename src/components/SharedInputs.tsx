@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Check, PencilLine, Upload } from "lucide-react";
+import { ChapterMark } from "./ChapterMark";
 import { FileUploader } from "./FileUploader";
 import { SharedContext } from "../types";
 
@@ -29,15 +30,7 @@ export const SharedInputs: React.FC<SharedInputsProps> = ({ context, onChange })
   return (
     <section id="your-details" aria-labelledby="your-details-title" className="flex flex-col gap-8">
       <header className="relative">
-        <div
-          aria-hidden="true"
-          className="mb-5 flex items-baseline gap-3 md:absolute md:-left-40 md:top-1 md:mb-0 md:w-32 md:flex-col md:items-start md:gap-1"
-        >
-          <span className="tnum font-mono text-[26px] font-medium leading-none text-accent">
-            01
-          </span>
-          <span className="label">Intake</span>
-        </div>
+        <ChapterMark step="01" phase="Intake" />
         <h2 id="your-details-title" className="display text-[34px] md:text-[44px]">
           {resumeLoaded ? "Your document." : "Start with your resume."}
         </h2>

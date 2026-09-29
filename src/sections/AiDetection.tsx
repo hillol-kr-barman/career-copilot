@@ -70,7 +70,7 @@ export const AiDetection: React.FC<AiDetectionProps> = ({ resumeText }) => {
         <button
           onClick={handleDetect}
           disabled={isDetecting}
-          className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+          className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-accent px-5 py-2.5 text-[15px] font-medium text-accent-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {isDetecting ? (
             <>
@@ -98,7 +98,7 @@ export const AiDetection: React.FC<AiDetectionProps> = ({ resumeText }) => {
               <p className="flex items-baseline gap-2.5">
                 {/* Serif, because this is the one number the whole tool exists
                     to report — and tabular so it doesn't shift while animating. */}
-                <span className="text-5xl leading-none text-ink tnum">{result.aiProbability}%</span>
+                <span className="stat text-ink">{result.aiProbability}%</span>
                 <span className="text-[15px] text-ink-soft">reads as AI-written</span>
               </p>
               <span className={`text-[15px] font-medium ${v.tone}`}>{v.label}</span>

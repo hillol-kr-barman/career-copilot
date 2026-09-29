@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useId, useState } from "react";
 import {
   KeyRound,
   Eye,
@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Check,
   ChevronDown,
+  ChevronUp,
   RefreshCw,
   AlertTriangle,
 } from "lucide-react";
@@ -17,6 +18,12 @@ interface ApiKeySetupProps {
   providerInfo: ProviderInfo | null;
   isVerifying: boolean;
   verifyError: string;
+  /**
+   * Whether an unset key should unfold the full provider walkthrough on its
+   * own. False while the hero owns the first screen — 415px of provider cards
+   * above the fold was the reason the page opened on plumbing.
+   */
+  autoExpand?: boolean;
 }
 
 const PROVIDERS = [
@@ -24,19 +31,16 @@ const PROVIDERS = [
     name: "Google Gemini",
     prefix: "AIza…",
     href: "https://aistudio.google.com/app/apikey",
-    note: "Generous free tier, the easiest place to start.",
   },
   {
     name: "OpenAI",
     prefix: "sk-…",
     href: "https://platform.openai.com/api-keys",
-    note: "Pay as you go, needs billing set up.",
   },
   {
     name: "Anthropic Claude",
     prefix: "sk-ant-…",
     href: "https://console.anthropic.com/settings/keys",
-    note: "Pay as you go, strong at long-form writing.",
   },
 ];
 
@@ -54,9 +58,21 @@ export const ApiKeySetup: React.FC<ApiKeySetupProps> = ({
   providerInfo,
   isVerifying,
   verifyError,
+  autoExpand = true,
 }) => {
   const [showKey, setShowKey] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  /**
+   * null means "follow the automatic rule below"; true or false is the reader's
+   * own choice and outranks it.
+   *
+   * A plain boolean could not express this: on a step that needs a key, the
+   * automatic rule forced the panel open, so pressing the header changed the
+   * flag and nothing else — the panel could not be closed at all.
+   */
+  const [override, setOverride] = useState<boolean | null>(null);
+  // Shared by the header strip and the Collapse button, so both announce
+  // that they control the same region.
+  const panelId = useId();
 
   const connected = Boolean(providerInfo);
 
@@ -77,19 +93,25 @@ export const ApiKeySetup: React.FC<ApiKeySetupProps> = ({
         ? "failed"
         : "pending";
 
-  // Volunteer the full setup only when there is genuinely no key, or when one
-  // failed and the person needs to reach the field to fix it.
-  const open = expanded || status === "empty" || status === "failed";
+  // Volunteer the full setup when there is genuinely no key, or when one failed
+  // and the person needs to reach the field to fix it. `autoExpand` lets the
+  // caller suppress the first case while something more important owns the
+  // screen; a failure still always opens, because that one needs acting on.
+  const autoOpen = status === "failed" || (status === "empty" && autoExpand);
+  const open = override ?? autoOpen;
+
+  useEffect(() => {
+    setOverride(null);
+  }, [status]);
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col">
       <button
         type="button"
-        onClick={() => connected && setExpanded(!expanded)}
-        aria-expanded={connected ? expanded : undefined}
-        className={`flex w-full items-center gap-3 text-left ${
-          connected ? "cursor-pointer" : "cursor-default"
-        }`}
+        onClick={() => setOverride(!open)}
+        aria-controls={panelId}
+        aria-expanded={open}
+        className="flex w-full cursor-pointer items-center gap-3 text-left"
       >
         {status === "connected" ? (
           <Check className="h-4 w-4 shrink-0 text-good" />
@@ -117,97 +139,127 @@ export const ApiKeySetup: React.FC<ApiKeySetupProps> = ({
           )}
         </span>
 
-        {connected && (
+        {(connected || !open) && (
           <span className="flex shrink-0 items-center gap-1 text-[15px] text-accent">
-            Change
-            <ChevronDown
-              className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`}
-            />
+            {connected ? "Change" : "Connect"}
+            <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
           </span>
         )}
       </button>
 
-      {open && (
-        <div className="flex flex-col gap-5">
-          {!connected && (
-            <>
-              <p className="measure text-[15px] leading-relaxed text-ink-soft">
-                Bring a key from any of these three. The provider and best available model are
-                worked out for you.
+      {/* Animating to a fixed max-height needs a magic number that is wrong the
+          moment the content changes; animating grid-template-rows from 0fr to
+          1fr lets the browser interpolate to the content's own height. The
+          inner wrapper owns the overflow clip, because the grid row is what
+          shrinks and the child has to be cropped by it.
+
+          The panel stays mounted when closed so a half-typed key survives a
+          collapse, and `inert` keeps its fields out of the tab order and the
+          accessibility tree while they are hidden. */}
+      <div id={panelId} className="disclosure" data-open={open} inert={!open}>
+        <div className="overflow-hidden">
+          <div className="flex flex-col gap-5 pt-5">
+            {!connected && (
+              <>
+                <p className="measure text-[15px] leading-relaxed text-ink-soft">
+                  Bring a key from any of these three. The provider and best available model are
+                  worked out for you.
+                </p>
+
+                {/* One column per provider: the name, the shape its key takes,
+                  and where to get one. The prefix is the load-bearing detail —
+                  it is how you tell which provider a key already in your
+                  clipboard belongs to. Hairline dividers come from a 1px grid
+                  gap over a ruled background rather than per-cell borders, so
+                  no edge doubles up where two cells meet. */}
+                <ul className="grid gap-px overflow-hidden rounded-control border border-rule bg-rule sm:grid-cols-3">
+                  {PROVIDERS.map((provider) => (
+                    <li key={provider.name} className="flex flex-col gap-2 bg-ground p-4">
+                      <p className="text-[15px] font-medium text-ink">{provider.name}</p>
+                      <p className="font-mono text-sm text-ink-soft">{provider.prefix}</p>
+                      <a
+                        href={provider.href}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        onClick={(e) => e.stopPropagation()}
+                        className="mt-auto inline-flex items-center gap-1.5 pt-1 text-[15px] text-accent underline-offset-4 hover:underline"
+                      >
+                        Create a key
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            <div className="flex flex-col gap-2">
+              <label htmlFor="api_key_input" className="text-[15px] font-medium text-ink">
+                Your API key
+              </label>
+              <div className="relative">
+                <input
+                  id="api_key_input"
+                  type={showKey ? "text" : "password"}
+                  value={apiKey}
+                  onChange={(e) => onApiKeyChange(e.target.value)}
+                  placeholder="AIza… or sk-… or sk-ant-…"
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-describedby="api_key_help"
+                  className="w-full rounded-control border border-rule bg-surface px-3.5 py-3 pr-11 font-mono text-[15px] text-ink outline-none transition-colors placeholder:text-ink-muted placeholder:font-sans hover:border-rule-strong focus:border-accent focus:ring-2 focus:ring-accent/20"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowKey(!showKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-muted transition-colors hover:text-ink"
+                  aria-label={showKey ? "Hide the key" : "Show the key"}
+                >
+                  {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <p id="api_key_help" className="measure text-sm leading-relaxed text-ink-muted">
+                Saved in this browser only. Sent to the server purely to make each AI call, never
+                logged or stored there.
               </p>
-
-              {/* Constrained, not full-bleed. Left to fill the 1120px shell
-                  this blew out to three columns ~440px apart holding two
-                  short lines each, while its own intro paragraph (68ch) and
-                  the key field (max-w-lg) sat at half that width — the strip
-                  read as broken rather than merely wide. Sharing `measure`
-                  with the paragraph above keeps the whole block one column. */}
-              <ul className="measure grid gap-x-8 gap-y-5 sm:grid-cols-3">
-                {PROVIDERS.map((p) => (
-                  <li key={p.name} className="flex flex-col gap-1">
-                    <p className="text-[15px] font-medium text-ink">{p.name}</p>
-                    <p className="text-sm leading-relaxed text-ink-soft measure">{p.note}</p>
-                    <a
-                      href={p.href}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      onClick={(e) => e.stopPropagation()}
-                      className="mt-1 inline-flex items-center gap-1 text-[15px] text-accent hover:underline underline-offset-4"
-                    >
-                      Create a key
-                      <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-
-          <div className="flex flex-col gap-2">
-            <label htmlFor="api_key_input" className="text-[15px] font-medium text-ink">
-              Your API key
-            </label>
-            <div className="relative max-w-lg">
-              <input
-                id="api_key_input"
-                type={showKey ? "text" : "password"}
-                value={apiKey}
-                onChange={(e) => onApiKeyChange(e.target.value)}
-                placeholder="AIza… or sk-… or sk-ant-…"
-                spellCheck={false}
-                autoComplete="off"
-                aria-describedby="api_key_help"
-                className="w-full rounded-control border border-rule bg-surface px-3.5 py-3 pr-11 font-mono text-[15px] text-ink outline-none transition-colors placeholder:text-ink-muted placeholder:font-sans hover:border-rule-strong focus:border-accent focus:ring-2 focus:ring-accent/20"
-              />
-              <button
-                type="button"
-                onClick={() => setShowKey(!showKey)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-muted transition-colors hover:text-ink"
-                aria-label={showKey ? "Hide the key" : "Show the key"}
-              >
-                {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
             </div>
-            <p id="api_key_help" className="measure text-sm leading-relaxed text-ink-muted">
-              Saved in this browser only. Sent to the server purely to make each AI call, never
-              logged or stored there.
-            </p>
-          </div>
 
-          {/* The failure is already stated in the strip above, next to the
+            {/* The failure is already stated in the strip above, next to the
               warning icon — repeating it here just doubled the same sentence. */}
 
-          {connected && (
-            <button
-              type="button"
-              onClick={() => onApiKeyChange("")}
-              className="self-start text-[15px] text-ink-soft transition-colors hover:text-mark"
-            >
-              Remove this key from the browser
-            </button>
-          )}
+            {/* Closing row. The header strip already toggles the panel, but
+                once it is open the header has scrolled away above the provider
+                columns and the key field — so the way out is off-screen just
+                when it is wanted. This puts it at the point the reader
+                finishes. */}
+            <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-3 border-t border-rule pt-4">
+              {connected ? (
+                <button
+                  type="button"
+                  onClick={() => onApiKeyChange("")}
+                  className="text-[15px] text-ink-soft transition-colors hover:text-mark"
+                >
+                  Remove this key from the browser
+                </button>
+              ) : (
+                // Keeps Collapse hard right whether or not its partner is there.
+                <span aria-hidden="true" />
+              )}
+
+              <button
+                type="button"
+                onClick={() => setOverride(false)}
+                aria-controls={panelId}
+                aria-expanded={open}
+                className="inline-flex items-center gap-1.5 text-[15px] text-ink-soft transition-colors hover:text-accent"
+              >
+                <ChevronUp className="h-4 w-4" />
+                Collapse
+              </button>
+            </div>
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

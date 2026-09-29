@@ -236,7 +236,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           <button
             ref={connectButtonRef}
             onClick={onConnect}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40 mt-2"
+            className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-accent px-5 py-2.5 text-[15px] font-medium text-accent-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40 mt-2"
           >
             <span>Connect microphone</span>
           </button>
@@ -246,7 +246,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       {status === "connecting" && (
         <button
           disabled
-          className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+          className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-accent px-5 py-2.5 text-[15px] font-medium text-accent-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <RefreshCw className="w-4 h-4 animate-spin" />
           <span>Connecting to microphone…</span>
@@ -262,7 +262,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           </p>
           <button
             onClick={onBegin}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+            className="w-full inline-flex items-center justify-center gap-2 rounded-control bg-accent px-5 py-2.5 text-[15px] font-medium text-accent-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Circle className="w-4 h-4" />
             <span>Begin recording</span>
@@ -294,9 +294,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           </p>
 
           <div className="w-full bg-sunken border border-rule p-5 rounded-control flex flex-col items-center justify-center gap-2">
-            <span className="text-4xl font-extrabold font-mono text-ink tracking-tight">
-              {formatElapsed(elapsedMs)}
-            </span>
+            <span className="stat text-ink">{formatElapsed(elapsedMs)}</span>
             {status === "recording" ? (
               <span className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-mark">
                 <span className="w-2 h-2 rounded-full bg-mark animate-pulse" />

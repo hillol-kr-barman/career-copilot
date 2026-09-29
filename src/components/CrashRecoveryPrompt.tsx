@@ -109,7 +109,7 @@ export const CrashRecoveryPrompt: React.FC<CrashRecoveryPromptProps> = ({
             <button
               type="button"
               onClick={onResume}
-              className="rounded-control bg-solid px-4 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90"
+              className="rounded-control bg-accent px-4 py-2.5 text-[15px] font-medium text-accent-ink transition-opacity hover:opacity-90"
             >
               Resume this session
             </button>

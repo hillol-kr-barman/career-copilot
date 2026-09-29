@@ -11,6 +11,10 @@ import { LogoMark } from "./LogoMark";
 export const Wordmark: React.FC<{ className?: string }> = ({ className = "" }) => (
   <span className={`flex items-center gap-2.5 ${className}`}>
     <LogoMark className="h-6 w-7 shrink-0 text-accent" />
-    <span className="text-[15px] font-semibold tracking-tight text-ink">Career Copilot</span>
+    {/* Opts out of the mono that every other control wears: this is the
+        product's name, not something you operate. */}
+    <span className="font-sans text-[15px] font-semibold tracking-tight text-ink">
+      Career Copilot
+    </span>
   </span>
 );

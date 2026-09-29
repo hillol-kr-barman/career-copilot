@@ -60,7 +60,7 @@ export const SpeakerBanner: React.FC<SpeakerBannerProps> = ({ speaker, onFlip, d
     >
       <span className="flex items-center gap-2.5">
         <Icon className="w-7 h-7 shrink-0" aria-hidden="true" />
-        <span className="text-2xl font-extrabold tracking-tight">{SPEAKER_LABEL[speaker]}</span>
+        <span className="text-2xl font-semibold tracking-tight">{SPEAKER_LABEL[speaker]}</span>
       </span>
       <span className="text-[13px] font-semibold tracking-wider opacity-70">
         {disabled ? "Paused — this is who was marked" : "Now speaking — press Space or tap to flip"}

@@ -185,7 +185,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
           <button
             onClick={handleGenerate}
             disabled={isGenerating}
-            className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+            className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-accent px-5 py-2.5 text-[15px] font-medium text-accent-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isGenerating ? (
               <>
@@ -368,19 +368,13 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                     STAR average
                   </span>
                   <div className="flex items-baseline gap-1 mt-2">
-                    <span className="text-4xl font-extrabold font-mono text-ink tracking-tight">
-                      {starAverage.toFixed(2)}
-                    </span>
+                    <span className="stat text-ink">{starAverage.toFixed(2)}</span>
                     <span className="text-ink-muted text-[15px] font-mono">/ 1.00</span>
                   </div>
                   <div className="w-full bg-surface h-2 rounded-full overflow-hidden mt-2">
                     <div
                       className={`h-full transition-all duration-500 rounded-full ${
-                        starAverage >= 0.75
-                          ? "bg-green-500"
-                          : starAverage < 0.5
-                            ? "bg-mark"
-                            : "bg-warn"
+                        starAverage >= 0.75 ? "bg-good" : starAverage < 0.5 ? "bg-mark" : "bg-warn"
                       }`}
                       style={{ width: `${starAverage * 100}%` }}
                     />
@@ -395,9 +389,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                   <span className="text-xs font-bold text-ink-muted tracking-wider">
                     Strong answers (STAR ≥ 0.75)
                   </span>
-                  <span className="text-4xl font-extrabold font-mono text-green-600 mt-2">
-                    {strongAnswers}
-                  </span>
+                  <span className="stat mt-2 text-good">{strongAnswers}</span>
                   <p className="text-[13px] text-ink-muted mt-1">
                     out of {scoreRows.length} question{scoreRows.length === 1 ? "" : "s"} assessed
                   </p>
@@ -407,11 +399,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                   <span className="text-xs font-bold text-ink-muted tracking-wider">
                     Weak answers (STAR &lt; 0.5)
                   </span>
-                  <span
-                    className={`text-4xl font-extrabold font-mono mt-2 ${
-                      weakAnswers > 0 ? "text-mark" : "text-ink"
-                    }`}
-                  >
+                  <span className={`stat mt-2 ${weakAnswers > 0 ? "text-mark" : "text-ink"}`}>
                     {weakAnswers}
                   </span>
                   <p className="text-[13px] text-ink-muted mt-1">
@@ -424,7 +412,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                 <button
                   onClick={handleEvaluate}
                   disabled={isEvaluating || !apiKey.trim()}
-                  className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-accent px-5 py-2.5 text-[15px] font-medium text-accent-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {isEvaluating ? (
                     <>

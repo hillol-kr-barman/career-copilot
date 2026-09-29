@@ -16,7 +16,7 @@ export const toolReadiness = (context: Partial<SharedContext>, apiKey: string) =
   const needsAll = (action: string): string | null => {
     if (!hasResume) return `Add your resume in step 1 to ${action}.`;
     if (!hasJobDescription) return `Paste the job description in step 1 to ${action}.`;
-    if (!hasKey) return `Connect your AI key at the top of the page to ${action}.`;
+    if (!hasKey) return `Connect your AI key just above to ${action}.`;
     return null;
   };
 

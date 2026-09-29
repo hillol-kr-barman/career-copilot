@@ -218,7 +218,7 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
           <button
             onClick={handleAnalyze}
             disabled={isAnalyzing}
-            className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-solid px-5 py-2.5 text-[15px] font-medium text-solid-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+            className="self-start inline-flex items-center justify-center gap-2 rounded-control bg-accent px-5 py-2.5 text-[15px] font-medium text-accent-ink transition-opacity hover:opacity-90 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isAnalyzing ? (
               <>
@@ -267,9 +267,7 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
                   Callback likelihood for this role
                 </span>
                 <div className="flex items-baseline gap-2">
-                  <span
-                    className={`text-5xl font-extrabold font-mono tracking-tight ${scoreTone(callbackPercent).tone}`}
-                  >
+                  <span className={`stat ${scoreTone(callbackPercent).tone}`}>
                     {callbackPercent}%
                   </span>
                 </div>
@@ -294,7 +292,7 @@ export const ResumeAudit: React.FC<ResumeAuditProps> = ({ context, apiKey }) => 
                       onClick={() => setActiveTab(section.tabName)}
                       className={`px-3 py-1.5 rounded-control text-[13px] font-semibold tracking-wide transition-all border ${
                         isActive
-                          ? "bg-solid text-solid-ink border-solid font-medium"
+                          ? "bg-accent text-accent-ink border-accent font-medium"
                           : isHeadline
                             ? "text-accent border-accent/30 bg-accent/5 hover:bg-accent/15"
                             : "text-ink-soft border-rule hover:text-ink hover:bg-sunken"

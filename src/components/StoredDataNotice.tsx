@@ -89,14 +89,14 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={handleClear}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control bg-mark/10 hover:bg-mark/20 border border-mark/30 text-mark text-[15px] font-semibold transition-all"
+              className="inline-flex items-center gap-1.5 rounded-control border border-mark bg-mark px-3 py-2 text-[15px] font-medium text-ground transition-opacity hover:opacity-90"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Yes, clear everything
             </button>
             <button
               onClick={() => setIsConfirming(false)}
-              className="px-3 py-2 rounded-control border border-rule text-ink-soft hover:text-ink hover:bg-sunken text-[15px] font-semibold transition-all"
+              className="rounded-control border border-rule px-3 py-2 text-[15px] font-medium text-ink-soft transition-colors hover:border-rule-strong hover:text-ink"
             >
               Cancel
             </button>
@@ -108,7 +108,7 @@ export const StoredDataNotice: React.FC<StoredDataNoticeProps> = ({
               setIsConfirming(true);
             }}
             disabled={stored.length === 0}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-control border border-rule text-ink-soft hover:text-ink hover:bg-sunken text-[15px] font-semibold transition-all disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1.5 rounded-control border border-rule px-3 py-2 text-[15px] font-medium text-ink-soft transition-colors hover:border-mark hover:bg-mark/10 hover:text-mark disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-rule disabled:hover:bg-transparent disabled:hover:text-ink-soft"
           >
             <Trash2 className="w-3.5 h-3.5" />
             Clear stored data

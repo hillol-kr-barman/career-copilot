@@ -210,7 +210,7 @@ export const InterviewScoringTable: React.FC<InterviewScoringTableProps> = ({
                   <span
                     className={`inline-block px-1.5 py-0.5 rounded-[3px] text-xs font-bold ${
                       row.starRating >= 0.75
-                        ? "bg-green-500/10 text-green-600 border border-green-500/20"
+                        ? "border border-good/25 bg-good/10 text-good"
                         : row.starRating < 0.5
                           ? "bg-mark/10 text-mark border border-mark/20"
                           : "bg-warn/10 text-warn border border-warn/20"
@@ -279,7 +279,7 @@ export const InterviewScoringTable: React.FC<InterviewScoringTableProps> = ({
                   <span
                     className={`inline-block px-1.5 py-0.5 rounded-[3px] text-xs font-bold ${
                       row.competencyRating >= 0.75
-                        ? "bg-green-500/10 text-green-600 border border-green-500/20"
+                        ? "border border-good/25 bg-good/10 text-good"
                         : row.competencyRating < 0.5
                           ? "bg-mark/10 text-mark border border-mark/20"
                           : "bg-warn/10 text-warn border border-warn/20"
