@@ -21,7 +21,7 @@ interface ChapterMarkProps {
  * before every heading would just be noise.
  */
 export const ChapterMark: React.FC<ChapterMarkProps> = ({ step, phase }) => (
-  <p aria-hidden="true" className="mb-3 flex items-baseline gap-2.5">
+  <p aria-hidden="true" className="mb-4 flex items-baseline gap-2.5">
     <span className="tnum font-mono text-[15px] font-medium leading-none text-accent">{step}</span>
     <span className="label">{phase}</span>
   </p>

@@ -304,7 +304,7 @@ const TranscriptTurnRow: React.FC<TranscriptTurnRowProps> = ({
                 data-segment-seq={segment.seq}
                 onClick={() => onMoveBoundary(segment.seq)}
                 title={`Speaker changes here — the lines above become ${SPEAKER_LABEL[previousSpeaker]}`}
-                className={`text-left text-[15px] text-ink-soft leading-relaxed rounded-[3px] -mx-1 px-1 border-l-2 transition-colors hover:bg-accent/10 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+                className={`text-left text-[15px] text-ink-soft leading-relaxed rounded-[6px] -mx-1 px-1 border-l-2 transition-colors hover:bg-accent/10 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
                   isHighlighted ? "border-l-accent bg-accent/15 text-ink" : "border-l-transparent"
                 }`}
               >

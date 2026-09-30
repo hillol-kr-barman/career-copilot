@@ -54,7 +54,7 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
               {title}
             </span>
             {badge && (
-              <span className="max-w-[18rem] truncate rounded-[3px] bg-accent/10 px-1.5 py-0.5 font-mono text-sm text-accent">
+              <span className="max-w-[18rem] truncate rounded-[6px] bg-accent/10 px-1.5 py-0.5 font-mono text-sm text-accent">
                 {badge}
               </span>
             )}

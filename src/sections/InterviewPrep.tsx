@@ -252,7 +252,7 @@ export const InterviewPrep: React.FC<InterviewPrepProps> = ({ context, apiKey })
                       </span>
                       <span className="flex items-center gap-2 shrink-0">
                         {pair.category && (
-                          <span className="hidden md:inline text-xs font-mono font-semibold tracking-wider text-ink-muted border border-rule rounded-[3px] px-2 py-0.5">
+                          <span className="hidden md:inline text-xs font-mono font-semibold tracking-wider text-ink-muted border border-rule rounded-[6px] px-2 py-0.5">
                             {pair.category}
                           </span>
                         )}

@@ -228,7 +228,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
             </div>
             <button
               onClick={clearFile}
-              className="p-1.5 text-ink-muted hover:text-mark rounded-[3px] transition-colors shrink-0"
+              className="p-1.5 text-ink-muted hover:text-mark rounded-[6px] transition-colors shrink-0"
               title="Remove this file"
             >
               <X className="w-4 h-4" />

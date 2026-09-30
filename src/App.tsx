@@ -1,8 +1,19 @@
 import React, { useState, useEffect } from "react";
-import { ArrowDown, Github, Linkedin } from "lucide-react";
+import {
+  ArrowDown,
+  BadgeCheck,
+  CircleCheck,
+  Github,
+  KeyRound,
+  Linkedin,
+  Scale,
+  ShieldCheck,
+} from "lucide-react";
 import { flushSync } from "react-dom";
 import { ApiKeySetup } from "./components/ApiKeySetup";
 import { LogoMark } from "./components/LogoMark";
+import { FooterBand } from "./components/SectionBand";
+import { HeroPreview } from "./components/HeroPreview";
 import { Wordmark } from "./components/Wordmark";
 import { SharedInputs } from "./components/SharedInputs";
 import { StepFooter } from "./components/StepFooter";
@@ -97,6 +108,49 @@ const loadContext = (): SharedContext => {
     return EMPTY_CONTEXT;
   }
 };
+
+/**
+ * The case for the tool, shown under the hero.
+ *
+ * Each of these is a property of the build rather than a selling point, and
+ * each is checkable: the key handling in ApiKeySetup and providers.ts, the
+ * in-browser transcription in the Live Interview worker, the delivery screen in
+ * the route handler, and the quote verification that downgrades anything it
+ * cannot locate. Nothing here is worded more strongly than the code supports —
+ * in particular the key does reach the server to make each call, it is simply
+ * never stored there, and that is what the first card says.
+ *
+ * The tags are the card's claim broken into the parts someone scanning would
+ * check for. They repeat the body deliberately: a reader who stops at the
+ * headings still leaves with the specifics, and one who reads the body gets the
+ * same facts twice rather than new ones smuggled in underneath.
+ */
+const WHY = [
+  {
+    icon: KeyRound,
+    title: "Bring your own key",
+    body: "No account, no subscription, no model of ours in the loop. Paste a Gemini, OpenAI or Anthropic key: it is kept in this browser, used only to make your own calls, and never stored on the server.",
+    tags: ["No account", "Three providers", "Never stored"],
+  },
+  {
+    icon: ShieldCheck,
+    title: "Your recording stays on your machine",
+    body: "Live Interview transcribes with Whisper running in a worker in this tab. The audio is never uploaded — only the transcript you can read first is ever sent anywhere.",
+    tags: ["Runs in this tab", "No audio upload", "Pinned model build"],
+  },
+  {
+    icon: Scale,
+    title: "Delivery is never scored",
+    body: "No accent, fluency, pace, filler words or confidence. Feedback judges what was said and how completely it answered the question; the rest is stripped on the server, where no client can skip it.",
+    tags: ["No accent or pace", "No filler counts", "Enforced server-side"],
+  },
+  {
+    icon: BadgeCheck,
+    title: "Quotes are checked, not generated",
+    body: "Every verdict cites a verbatim quote, verified against the stored transcript before it renders. One that cannot be located is downgraded rather than shown to you as fact.",
+    tags: ["Verbatim only", "Checked against transcript", "Downgraded, not shown"],
+  },
+];
 
 /** Read the key, falling back to the Gemini-only key name used before v2. */
 const loadApiKey = (): string =>
@@ -406,6 +460,33 @@ export default function App() {
     document.getElementById("workflow")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  /**
+   * Change step, and land the reader on the rail rather than wherever the old
+   * layout left them.
+   *
+   * Step 01 renders the hero and the case-for-the-tool section above the rail;
+   * steps 02-05 render neither. Selecting 01 from another step therefore
+   * inserts about two screens of landing page above the panel that was asked
+   * for, and the browser keeps the scroll offset it already had — which now
+   * points into the hero. You ask for step 01 and arrive at the front page.
+   *
+   * `flushSync` is what makes the measurement honest. React would otherwise
+   * batch the step change until after this function returned, so
+   * scrollIntoView would aim at where the rail sat in the *old* layout — the
+   * same bug, one frame earlier.
+   *
+   * Instant rather than smooth, and explicitly so: `html` sets
+   * `scroll-behavior: smooth`, which a bare scrollIntoView would inherit. The
+   * distance here can be two screens of content that is being replaced while
+   * you travel over it, and animating that reads as the page running away.
+   * The hero's own call to action keeps its smooth scroll, where the travel is
+   * short and showing that there is a page below is the entire point.
+   */
+  const goToStep = (id: StepId) => {
+    flushSync(() => setActiveStep(id));
+    document.getElementById("workflow")?.scrollIntoView({ behavior: "instant", block: "start" });
+  };
+
   const steps: Step[] = [
     { id: "details", label: "Your details" },
     { id: "detection", label: "AI check", lockedReason: readiness.detection },
@@ -419,7 +500,12 @@ export default function App() {
   return (
     // relative + z-10 lifts the content above the fixed grid layer painted
     // on body::before.
-    <div className="relative z-10 flex min-h-screen flex-col">
+    // overflow-x-clip absorbs the hero band's full-bleed overhang: it is sized
+    // in vw, which counts the always-on scrollbar, and without this the surplus
+    // would show up as a horizontal scrollbar on every page. `clip` rather than
+    // `hidden` — hidden would make this a scroll container and break the sticky
+    // masthead inside it.
+    <div className="relative z-10 flex min-h-screen flex-col overflow-x-clip">
       {/* ── Masthead ─────────────────────────────────────────────────── */}
       <header
         /* The rule is there to separate the bar from content passing beneath
@@ -428,9 +514,14 @@ export default function App() {
            the border outright would shift the whole page up by a pixel the
            moment it appeared. The translucency and blur are held back for the
            same reason — at the top of the page there is nothing behind the bar
-           to see through to. */
+           to see through to.
+           Solid `--surface` at rest — genuinely white, against a page ground
+           that is now very slightly tinted. That contrast is the point: the bar
+           reads as a fixed white shelf the tinted page runs under, rather than
+           dissolving into it. It also means the band beneath no longer needs to
+           reach up behind the bar, so it does not. */
         className={`sticky top-0 z-50 border-b transition-colors duration-200 ${
-          scrolled ? "border-rule bg-ground/80 backdrop-blur-md" : "border-transparent bg-ground"
+          scrolled ? "border-rule bg-surface/80 backdrop-blur-md" : "border-transparent bg-surface"
         }`}
       >
         <div className="mx-auto w-full max-w-[1120px] px-6">
@@ -506,42 +597,131 @@ export default function App() {
                  to action below the fold on the one screen where it matters
                  most. Centred vertically, and still `min-h` so a long headline
                  or a narrow screen can grow past it rather than clip. */
-              <section className="flex min-h-[calc(100svh-3.5rem)] flex-col justify-center border-b border-rule py-16">
-                <p className="label mb-4">Set for your next interview?</p>
-                <h1 className="display max-w-[19ch] text-[34px] leading-tight md:text-[52px]">
-                  Four <span className="highlight"> checks </span>,<br></br>over one resume,{" "}
-                  <span className="highlight">
-                    {" "}
-                    <br></br>before the interview.
-                  </span>
-                </h1>
-                <p className="measure mt-5 text-base leading-relaxed text-ink-soft">
-                  Add your resume once. Find out whether it reads as AI-written, score your odds of
-                  a callback against a specific job, prepare the answers you will be asked for, and
-                  record a practice run — all on an AI key you bring yourself, which never leaves
-                  your browser.
-                </p>
-                {/* Scrolls rather than jumps: with the hero occupying the whole
+              /* relative + isolate: the backdrop is absolutely positioned
+                 against this box and sits at -z-10, and `isolate` keeps that
+                 negative layer inside the section rather than sliding behind
+                 the page ground.
+                 No bottom rule any more: the band ends here, and a hairline
+                 drawn on top of a change of colour is a second divider doing
+                 the first one's job.
+                 No band behind the hero any more: the colour lives on the
+                 preview panel instead, so it belongs to the image rather than
+                 to the whole screen. */
+              <section className="flex min-h-[calc(100svh-3.5rem)] flex-col justify-center py-24">
+                {/* Two columns from lg up, one below it. The text column keeps
+                    its own measure rather than stretching to the full width it
+                    used to have, which is the only thing the split changes
+                    about it. The preview column is capped rather than fluid:
+                    past about 460px the mock stops reading as a panel of output
+                    and starts reading as a second page. */}
+                <div className="grid items-center gap-16 lg:grid-cols-[minmax(0,1fr)_minmax(0,460px)]">
+                  <div className="flex flex-col items-start">
+                    <p className="label mb-4">Set for your next interview?</p>
+                    <h1 className="display max-w-[19ch] text-[34px] leading-tight md:text-[52px]">
+                      Four <span className="highlight"> checks </span>,<br></br>over one resume,{" "}
+                      <span className="highlight">
+                        {" "}
+                        <br></br>before the interview.
+                      </span>
+                    </h1>
+                    <p className="measure mt-5 text-base leading-relaxed text-ink-soft">
+                      Add your resume once. Find out whether it reads as AI-written, score your odds
+                      of a callback against a specific job, prepare the answers you will be asked
+                      for, and record a practice run — all on an AI key you bring yourself, which
+                      never leaves your browser.
+                    </p>
+                    {/* Scrolls rather than jumps: with the hero occupying the whole
                     viewport the work below is entirely out of sight, and a hard
                     jump gives no sense that there is a page under the fold. */}
-                {/* self-start: the hero is a flex column, so without it the button
+                    {/* self-start: the hero is a flex column, so without it the button
                     stretches the full width of the section. */}
-                <button
-                  type="button"
-                  onClick={scrollToWorkflow}
-                  className={`${CTA} mt-8 self-start`}
-                >
-                  Get Started
-                  <ArrowDown className="cta-arrow-down h-4 w-4" />
-                </button>
+                    <button
+                      type="button"
+                      onClick={scrollToWorkflow}
+                      className={`${CTA} mt-8 self-start`}
+                    >
+                      Get Started
+                      <ArrowDown className="cta-arrow-down h-4 w-4" />
+                    </button>
+                  </div>
+
+                  {/* Hidden below lg rather than stacked. On a phone the hero
+                      already fills the screen with the headline and the call to
+                      action; pushing those up to make room for a decorative
+                      panel would cost the one screen where the button most
+                      needs to be above the fold. */}
+                  <div className="hidden lg:block">
+                    <HeroPreview />
+                  </div>
+                </div>
               </section>
             )}
 
-            <div id="workflow" className="scroll-mt-16">
+            {/* Why this one — the case for the tool, between the hero's claim
+            and the tool itself. Gated on showHero for the same reason the hero
+            is: on steps 02-05 you have already chosen, and an argument for
+            choosing is a wall in front of the work.
+            Deliberately not a second band. The hero and the footer are a pair
+            of coloured ends; a third band between them would turn a bookend
+            into stripes. */}
+            {showHero && (
+              <section aria-labelledby="why-title" className="border-b border-rule py-24 md:py-32">
+                <p className="label mb-5">Why choose this service</p>
+                <h2 id="why-title" className="display text-[28px] md:text-[38px]">
+                  Commitments, not claims.
+                </h2>
+                <p className="measure mt-5 text-base leading-relaxed text-ink-soft">
+                  Every one of these is enforced in code rather than promised in copy — and the
+                  source is open if you would rather check than take our word for it.
+                </p>
+
+                {/* Two columns rather than four. At four across each card is about
+                    260px wide and these bodies break to six or seven lines of
+                    three words, so the argument stops being readable exactly
+                    where it needs to land. */}
+                <div className="mt-14 grid gap-6 sm:grid-cols-2 md:mt-16 md:gap-8">
+                  {WHY.map(({ icon: Icon, title, body, tags }) => (
+                    /* rounded-card rather than rounded-control: at 5px these read
+                       as four rectangles in a table, and a card is the one place
+                       in this app where the softer of the two radii belongs.
+                       The padding is what does most of the work — a claim of this
+                       weight needs room around it, not a tight box. */
+                    <div
+                      key={title}
+                      className="rounded-card border border-rule bg-surface p-8 md:p-10"
+                    >
+                      <Icon className="h-6 w-6 shrink-0 text-accent" aria-hidden="true" />
+                      <h3 className="mt-8 text-[19px] font-semibold text-ink">{title}</h3>
+                      <p className="mt-4 text-[15px] leading-relaxed text-ink-soft">{body}</p>
+                      {/* The specifics, for a reader skimming rather than reading.
+                          Sits right under the body rather than pinned to the foot
+                          of the card: pinned, the gap above it grows with whatever
+                          the longest card in the row happens to be. */}
+                      <ul className="mt-8 flex flex-wrap gap-2">
+                        {tags.map((tag) => (
+                          <li
+                            key={tag}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-sunken px-3 py-1.5 text-[13px] text-ink-soft"
+                          >
+                            <CircleCheck
+                              className="h-3.5 w-3.5 shrink-0 text-accent"
+                              aria-hidden="true"
+                            />
+                            {tag}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            <div id="workflow" className="scroll-mt-16 pt-12 md:pt-16">
               <StepRail
                 steps={steps}
                 activeId={activeStep}
-                onSelect={(id) => setActiveStep(id as StepId)}
+                onSelect={(id) => goToStep(id as StepId)}
               />
             </div>
 
@@ -549,7 +729,7 @@ export default function App() {
             and so placed under the rail rather than above it. As the first
             child of <main> it was the first thing every visitor saw, which is
             how the page came to open on a credential form. */}
-            <div className="border-b border-rule py-5">
+            <div className="border-b border-rule py-6">
               <ApiKeySetup
                 apiKey={apiKey}
                 onApiKeyChange={handleApiKeyChange}
@@ -563,13 +743,13 @@ export default function App() {
               />
             </div>
 
-            <div className="py-12 md:py-16">
+            <div className="py-16 md:py-20">
               <Panel id="details" activeStep={activeStep}>
                 <SharedInputs context={context} onChange={updateContext} />
                 <StepFooter
                   steps={steps}
                   currentId="details"
-                  onSelect={(id) => setActiveStep(id as StepId)}
+                  onSelect={(id) => goToStep(id as StepId)}
                 />
               </Panel>
 
@@ -578,7 +758,7 @@ export default function App() {
                 <StepFooter
                   steps={steps}
                   currentId="detection"
-                  onSelect={(id) => setActiveStep(id as StepId)}
+                  onSelect={(id) => goToStep(id as StepId)}
                 />
               </Panel>
 
@@ -587,7 +767,7 @@ export default function App() {
                 <StepFooter
                   steps={steps}
                   currentId="audit"
-                  onSelect={(id) => setActiveStep(id as StepId)}
+                  onSelect={(id) => goToStep(id as StepId)}
                 />
               </Panel>
 
@@ -596,7 +776,7 @@ export default function App() {
                 <StepFooter
                   steps={steps}
                   currentId="prep"
-                  onSelect={(id) => setActiveStep(id as StepId)}
+                  onSelect={(id) => goToStep(id as StepId)}
                 />
               </Panel>
 
@@ -610,12 +790,12 @@ export default function App() {
                 <StepFooter
                   steps={steps}
                   currentId="live"
-                  onSelect={(id) => setActiveStep(id as StepId)}
+                  onSelect={(id) => goToStep(id as StepId)}
                 />
               </Panel>
             </div>
 
-            <div className="border-t border-rule py-6">
+            <div className="border-t border-rule py-8">
               <StoredDataNotice
                 hasResume={Boolean(context.resumeText.trim())}
                 hasJobDescription={Boolean(context.jobDescription.trim())}
@@ -632,9 +812,13 @@ export default function App() {
           One plate, not two. The privacy line, the byline and the copyright
           were three separate tiers saying closely related things; merged, the
           foot of the page is a single row a reader takes in at once. */}
-      <footer className="border-t border-rule">
-        <div className="mx-auto w-full max-w-[1120px] px-6 py-8">
-          <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
+      {/* relative + isolate for the band, exactly as the hero does it. No top
+      rule any more: the band starts here, and a hairline drawn on top of a
+      change of colour is a second divider doing the first one's job. */}
+      <footer className="relative isolate">
+        <FooterBand />
+        <div className="mx-auto w-full max-w-[1120px] px-6 py-14 md:py-16">
+          <div className="flex flex-col gap-8 md:flex-row md:items-start md:justify-between">
             <div className="flex items-start gap-3">
               <LogoMark className="mt-0.5 h-5 w-6 shrink-0 text-accent" />
               <div className="measure flex flex-col gap-1 text-sm text-ink-muted">
@@ -677,7 +861,7 @@ export default function App() {
             </div>
           </div>
 
-          <p className="mt-7 border-t border-rule pt-5 font-mono text-xs text-ink-muted">
+          <p className="mt-10 border-t border-rule pt-6 font-mono text-xs text-center text-ink-muted">
             © {new Date().getFullYear()} Career Copilot
           </p>
         </div>

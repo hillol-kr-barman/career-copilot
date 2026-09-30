@@ -21,7 +21,12 @@
    One colour in two cuts — #4a37c8 on light (7.7:1) and #a99cff on dark
    (8.2:1). Both read as the same violet. */
 :root {
-  --ground: #fcfcfd;
+  /* Not white. A trace of the accent mixed into it — about 2% — so the page
+     has a cast rather than a glare, and the genuinely white surfaces (the
+     masthead, the cards) read as raised off it rather than continuous with it.
+     Dark keeps its untinted ground: tinting toward the accent is what the
+     bands do there, and doing it twice flattens the difference between them. */
+  --ground: #faf9fc;
   --surface: #ffffff;
   --sunken: #f4f5f7;
   --ink: #101828;
@@ -94,10 +99,13 @@
   --font-sans: "Schibsted Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* Squarer than the reference's soft 8/12. A tighter radius reads as
-     precision, which is the register this tool wants. */
-  --radius-card: 8px;
-  --radius-control: 5px;
+  /* Doubled from the 8/5 this started on. That earlier pair was chosen to read
+     as precision, and it did — but at 5px a control's corner is a chamfer you
+     have to look for rather than a shape, and next to the softer cards it read
+     as an inconsistency rather than a register. 16/10 keeps the two a clear
+     step apart while letting both actually look rounded. */
+  --radius-card: 16px;
+  --radius-control: 10px;
 
   --shadow-card: var(--shadow-card);
 }
@@ -190,9 +198,77 @@ h4 {
   background: var(--accent);
   color: var(--accent-ink);
   /*padding: 0.06em 0.26em;*/
-  border-radius: 8px;
+  border-radius: 16px;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
+}
+
+/* ── Vertical rhythm ──────────────────────────────────────────────────────
+ *
+ * Not utilities — a note, because the spacing lives in the markup and drifts
+ * the moment nobody can say what the intervals are meant to be.
+ *
+ * Two registers. Landing surfaces (hero, the case for the tool, the footer)
+ * run generous: py-24/py-32 between sections, mt-14/mt-16 from a section's
+ * heading block to its content, gap-6/gap-8 between cards, p-8/p-10 inside
+ * one. Working surfaces — the step panels, the connection strip — sit one step
+ * below that, py-16/py-20, because a page you are reading wants air and a page
+ * you are filling in wants the next field on screen.
+ *
+ * Inside a card the intervals go 8 / 4 / 8: icon, a wide gap, title, a tight
+ * gap, body, a wide gap, tags. The even gap-3 they used to share is what made
+ * them read as clumsy — four elements equally spaced are a list, not a card.
+ */
+
+/* ── Section bands ────────────────────────────────────────────────────────
+ *
+ * A flat band of colour with the mark cropped against its right edge — the hero
+ * opens the page with one, the footer closes it (see SectionBand.tsx). Two
+ * values carry the whole thing, so they live together rather than scattered
+ * through utility classes.
+ *
+ * Both are mixed from --accent rather than written out as hex, which keeps the
+ * panel tied to the one colour the rest of the app runs on: change the accent
+ * and the hero follows.
+ *
+ * The mixes are set twice, and asymmetrically. 5% violet over the light ground
+ * is a hint of colour — the band should read as the page taking on a cast, not
+ * as a panel dropped onto it. The same 5% into #0b0e14 would be invisible,
+ * because a tint on a dark ground is doing the opposite job — lightening rather
+ * than deepening — and has to work harder to register at all. */
+
+.band-panel {
+  background: color-mix(in oklab, var(--accent) 5%, var(--ground));
+}
+
+[data-theme="dark"] .band-panel {
+  background: color-mix(in oklab, var(--accent) 12%, var(--ground));
+}
+
+/* Runs the hero panel's ground from its own left edge to the right edge of the
+   window. The distance to cover is whatever sits between the page container's
+   content edge and the window: half the leftover width either side of the
+   1120px container, plus the container's own 1.5rem padding. Below 1120px there
+   is no leftover, so max() falls back to the padding alone.
+   100vw counts the scrollbar, so this overshoots by a few pixels — absorbed by
+   `overflow-x-clip` on the page root, and invisible either way. */
+.band-bleed-right {
+  right: calc(-1 * max(1.5rem, (100vw - 1120px) / 2 + 1.5rem));
+}
+
+/* The mark on both panels — the hero's preview and the footer's band. Tone on
+   tone: the accent turned down, so the shape is the panel's own colour pushed
+   further rather than a separate one laid over it.
+   One rule for both on purpose. They are the same colour by construction
+   rather than by two values someone has to keep in step, so this is the single
+   place to change either. Low enough that the headline still owns the screen,
+   high enough to read as the logo rather than as a smudge. */
+.band-mark {
+  opacity: 0.1;
+}
+
+[data-theme="dark"] .band-mark {
+  opacity: 0.16;
 }
 
 /* The hero call to action.
@@ -349,7 +425,7 @@ h4 {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: 4px;
 }
 
 ::selection {

@@ -364,7 +364,7 @@ const MeterRow: React.FC<MeterRowProps> = ({ state, level, hasMeter }) => {
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="label">ROOM MICROPHONE</span>
         <span
-          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[3px] border text-xs font-semibold shrink-0 ${CHIP_CLASSES[state]}`}
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] border text-xs font-semibold shrink-0 ${CHIP_CLASSES[state]}`}
         >
           <Icon className={`w-3 h-3 ${state === "waiting" ? "animate-spin" : ""}`} />
           {CHIP_LABEL[state]}

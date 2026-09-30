@@ -28,13 +28,17 @@ export const SharedInputs: React.FC<SharedInputsProps> = ({ context, onChange })
   const resumeLoaded = resumeText.length > 0;
 
   return (
-    <section id="your-details" aria-labelledby="your-details-title" className="flex flex-col gap-8">
+    <section
+      id="your-details"
+      aria-labelledby="your-details-title"
+      className="flex flex-col gap-10"
+    >
       <header className="relative">
         <ChapterMark step="01" phase="Intake" />
         <h2 id="your-details-title" className="display text-[34px] md:text-[44px]">
           {resumeLoaded ? "Your document." : "Start with your resume."}
         </h2>
-        <p className="measure mt-4 text-base leading-relaxed text-ink-soft">
+        <p className="measure mt-5 text-base leading-relaxed text-ink-soft">
           Add it once. Every step below reads this one document.
         </p>
       </header>

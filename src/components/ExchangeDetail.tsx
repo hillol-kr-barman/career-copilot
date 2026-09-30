@@ -174,7 +174,7 @@ const SubAskRow: React.FC<SubAskRowProps> = ({ subAsk, onJumpToSegment, canJump 
         <span className="text-accent font-mono shrink-0">{meta.glyph}</span>
         <span className="font-semibold text-ink">{capitalize(meta.label)}</span>
         {subAsk.source === "implied_by_jd" && (
-          <span className="text-xs font-mono font-semibold tracking-wider text-ink-muted border border-rule rounded-[3px] px-1.5 py-0.5">
+          <span className="text-xs font-mono font-semibold tracking-wider text-ink-muted border border-rule rounded-[6px] px-1.5 py-0.5">
             An opportunity the job description implies
           </span>
         )}
@@ -201,7 +201,7 @@ const SubAskRow: React.FC<SubAskRowProps> = ({ subAsk, onJumpToSegment, canJump 
             type="button"
             onClick={() => onJumpToSegment(subAsk.evidenceSegmentSeq as number)}
             title="Jump to this line in the transcript"
-            className="text-left text-[15px] text-ink-soft italic leading-relaxed pl-5 rounded-[3px] -ml-1 pr-1 transition-colors hover:bg-accent/10 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent measure"
+            className="text-left text-[15px] text-ink-soft italic leading-relaxed pl-5 rounded-[6px] -ml-1 pr-1 transition-colors hover:bg-accent/10 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent measure"
           >
             <span className="font-mono text-accent not-italic">
               [{formatElapsed(subAsk.evidenceStartMs ?? 0)}]

@@ -208,7 +208,7 @@ export const InterviewScoringTable: React.FC<InterviewScoringTableProps> = ({
                 {/* STAR Rating Indicator */}
                 <td className="px-3 py-3 text-center bg-sunken/30 border-x border-rule font-semibold font-mono">
                   <span
-                    className={`inline-block px-1.5 py-0.5 rounded-[3px] text-xs font-bold ${
+                    className={`inline-block px-1.5 py-0.5 rounded-[6px] text-xs font-bold ${
                       row.starRating >= 0.75
                         ? "border border-good/25 bg-good/10 text-good"
                         : row.starRating < 0.5
@@ -277,7 +277,7 @@ export const InterviewScoringTable: React.FC<InterviewScoringTableProps> = ({
                 {/* Competency Rating Indicator */}
                 <td className="px-3 py-3 text-center bg-sunken/30 border-x border-rule font-semibold font-mono">
                   <span
-                    className={`inline-block px-1.5 py-0.5 rounded-[3px] text-xs font-bold ${
+                    className={`inline-block px-1.5 py-0.5 rounded-[6px] text-xs font-bold ${
                       row.competencyRating >= 0.75
                         ? "border border-good/25 bg-good/10 text-good"
                         : row.competencyRating < 0.5
